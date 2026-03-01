@@ -1,9 +1,9 @@
 /***************************************************************************//**
  * @file
- * @brief Simple Led Driver Configuration
+ * @brief Simple Button Driver User Config
  *******************************************************************************
  * # License
- * <b>Copyright 2019 Silicon Laboratories Inc. www.silabs.com</b>
+ * <b>Copyright 2024 Silicon Laboratories Inc. www.silabs.com</b>
  *******************************************************************************
  *
  * SPDX-License-Identifier: Zlib
@@ -28,33 +28,34 @@
  *
  ******************************************************************************/
 
-#ifndef SL_SIMPLE_LED_LED0_CONFIG_H
-#define SL_SIMPLE_LED_LED0_CONFIG_H
+#ifndef SL_SIMPLE_BUTTON_BTN2_CONFIG_H
+#define SL_SIMPLE_BUTTON_BTN2_CONFIG_H
+
+#include "sl_gpio.h"
+#include "sl_simple_button.h"
 
 // <<< Use Configuration Wizard in Context Menu >>>
 
-// <h> Simple LED configuration
-// <o SL_SIMPLE_LED_LED0_POLARITY>
-// <SL_SIMPLE_LED_POLARITY_ACTIVE_LOW=> Active low
-// <SL_SIMPLE_LED_POLARITY_ACTIVE_HIGH=> Active high
-// <i> Default: SL_SIMPLE_LED_POLARITY_ACTIVE_HIGH
-#define SL_SIMPLE_LED_LED0_POLARITY SL_SIMPLE_LED_POLARITY_ACTIVE_LOW
-// </h> end led configuration
-
+// <o SL_SIMPLE_BUTTON_BTN2_MODE>
+// <SL_SIMPLE_BUTTON_MODE_INTERRUPT=> Interrupt
+// <SL_SIMPLE_BUTTON_MODE_POLL_AND_DEBOUNCE=> Poll and Debounce
+// <SL_SIMPLE_BUTTON_MODE_POLL=> Poll
+// <i> Default: SL_SIMPLE_BUTTON_MODE_INTERRUPT
+#define SL_SIMPLE_BUTTON_BTN2_MODE       SL_SIMPLE_BUTTON_MODE_INTERRUPT
 // <<< end of configuration section >>>
 
 // <<< sl:start pin_tool >>>
 
-// <gpio> SL_SIMPLE_LED_LED0
-// $[GPIO_SL_SIMPLE_LED_LED0]
-#ifndef SL_SIMPLE_LED_LED0_PORT                 
-#define SL_SIMPLE_LED_LED0_PORT                  SL_GPIO_PORT_D
+// <gpio> SL_SIMPLE_BUTTON_BTN2
+// $[GPIO_SL_SIMPLE_BUTTON_BTN2]
+#ifndef SL_SIMPLE_BUTTON_BTN2_PORT              
+#define SL_SIMPLE_BUTTON_BTN2_PORT               SL_GPIO_PORT_B
 #endif
-#ifndef SL_SIMPLE_LED_LED0_PIN                  
-#define SL_SIMPLE_LED_LED0_PIN                   5
+#ifndef SL_SIMPLE_BUTTON_BTN2_PIN               
+#define SL_SIMPLE_BUTTON_BTN2_PIN                5
 #endif
-// [GPIO_SL_SIMPLE_LED_LED0]$
+// [GPIO_SL_SIMPLE_BUTTON_BTN2]$
 
 // <<< sl:end pin_tool >>>
 
-#endif // SL_SIMPLE_LED_LED0_CONFIG_H
+#endif // SL_SIMPLE_BUTTON_BTN2_CONFIG_H

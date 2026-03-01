@@ -31,10 +31,8 @@ component:
 - {id: iostream_recommended_console}
 - {id: iostream_retarget_stdio}
 - {id: iostream_rtt}
-- instance: [btn1]
+- instance: [btn1, btn2]
   id: simple_button
-- instance: [led0]
-  id: simple_led
 - {id: sl_main}
 - {id: toolchain_gcc_lto}
 - {id: zigbee_application_bootloader}
@@ -42,23 +40,26 @@ component:
 - {id: zigbee_core_cli}
 - {id: zigbee_counters}
 - {id: zigbee_debug_print}
-- {id: zigbee_end_device_support}
 - {id: zigbee_find_and_bind_initiator}
+- {id: zigbee_find_and_bind_target}
+- {id: zigbee_green_power_client}
 - {id: zigbee_groups_client}
+- {id: zigbee_groups_server}
 - {id: zigbee_identify}
 - {id: zigbee_interpan}
 - {id: zigbee_network_steering}
-- {id: zigbee_pro_leaf_stack}
+- {id: zigbee_on_off}
+- {id: zigbee_ota_client}
+- {id: zigbee_ota_storage_simple}
+- {id: zigbee_pro_stack}
+- {id: zigbee_reporting}
 - {id: zigbee_scan_dispatch}
+- {id: zigbee_scenes}
 - {id: zigbee_scenes_client}
+- {id: zigbee_source_route}
 - {id: zigbee_update_tc_link_key}
 - {id: zigbee_zcl_cli}
 - {id: zigbee_zcl_framework_core}
-- {id: zigbee_zll}
-- {id: zigbee_zll_commissioning_client}
-- {id: zigbee_zll_commissioning_common}
-- {id: zigbee_zll_scenes_client}
-- {id: zigbee_zll_utility_client}
 config_file:
 - {path: config/zcl/zcl_config.zap, directory: zcl}
 configuration:

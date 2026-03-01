@@ -1,5 +1,5 @@
 /***************************************************************************//**
- * @brief Zigbee PRO Leaf Stack component configuration header.
+ * @brief ZigBee PRO Full Stack component configuration header.
  *\n*******************************************************************************
  * # License
  * <b>Copyright 2020 Silicon Laboratories Inc. www.silabs.com</b>
@@ -13,10 +13,14 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-
 // <<< Use Configuration Wizard in Context Menu >>>
 
 // <h>Zigbee PRO Stack Library configuration
+
+// <o SL_ZIGBEE_MAX_END_DEVICE_CHILDREN> Child Table Size <0-64>
+// <i> Default: 6
+// <i> The maximum number of ZigBee PRO End Devices that can be supported by a single device.
+#define SL_ZIGBEE_MAX_END_DEVICE_CHILDREN   6
 
 // <h> Packet Buffer Heap Allocation
 // <o SL_ZIGBEE_PACKET_BUFFER_HEAP_SIZE > Packet Buffer Heap Size <512-16384>
@@ -28,16 +32,16 @@
 // <SL_ZIGBEE_LARGE_PACKET_BUFFER_HEAP=> Large (8192)
 // <SL_ZIGBEE_HUGE_PACKET_BUFFER_HEAP=> Huge (16384)
 // <SL_ZIGBEE_CUSTOM_PACKET_BUFFER_HEAP=> Custom
-// <d> SL_ZIGBEE_MEDIUM_PACKET_BUFFER_HEAP
+// <d> SL_ZIGBEE_LARGE_PACKET_BUFFER_HEAP
 // <o SL_ZIGBEE_CUSTOM_PACKET_BUFFER_HEAP> Custom Heap Size <1024-16384>
-// <i> Specify the exact number of bytes to use
+// <i> Specify the exact number of bytes to use (aligned on 4-byte boundaries)
 #define SL_ZIGBEE_TINY_PACKET_BUFFER_HEAP 1024
 #define SL_ZIGBEE_SMALL_PACKET_BUFFER_HEAP 2048
 #define SL_ZIGBEE_MEDIUM_PACKET_BUFFER_HEAP 4096
 #define SL_ZIGBEE_LARGE_PACKET_BUFFER_HEAP 8192
 #define SL_ZIGBEE_HUGE_PACKET_BUFFER_HEAP 16384
 #define SL_ZIGBEE_CUSTOM_PACKET_BUFFER_HEAP 0
-#define SL_ZIGBEE_PACKET_BUFFER_HEAP_SIZE  SL_ZIGBEE_MEDIUM_PACKET_BUFFER_HEAP
+#define SL_ZIGBEE_PACKET_BUFFER_HEAP_SIZE  SL_ZIGBEE_LARGE_PACKET_BUFFER_HEAP
 // </h>
 
 // <o SL_ZIGBEE_END_DEVICE_KEEP_ALIVE_SUPPORT_MODE> End Device keep alive support mode
@@ -91,27 +95,28 @@
 // <i> The size of the broadcast table.
 #define SL_ZIGBEE_BROADCAST_TABLE_SIZE   15
 
+// <o SL_ZIGBEE_NEIGHBOR_TABLE_SIZE> Neighbor Table Size
+// <i> Neighbor Table Size
+// <16=> 16
+// <26=> 26
+// <i> Default: 16
+// <i> The size of the neighbor table.
+#define SL_ZIGBEE_NEIGHBOR_TABLE_SIZE   16
+
 // <o SL_ZIGBEE_TRANSIENT_KEY_TIMEOUT_S> Transient key timeout (in seconds) <0-65535>
 // <i> Default: 300
 // <i> The amount of time a device will store a transient link key that can be used to join a network.
 #define SL_ZIGBEE_TRANSIENT_KEY_TIMEOUT_S   300
 
-//The maximum number of ZigBee PRO End Devices that can be supported by a single device.
-#define SL_ZIGBEE_MAX_END_DEVICE_CHILDREN   0
-
-// The size of the neighbor table.
-#define SL_ZIGBEE_NEIGHBOR_TABLE_SIZE   1
-
-// The size of the route table.
-#define SL_ZIGBEE_ROUTE_TABLE_SIZE    0
-
-// The minimum size of the route table.
-#define SL_ZIGBEE_MIN_ROUTE_TABLE_SIZE  0
-
 // <o SL_ZIGBEE_BINDING_TABLE_SIZE> Binding Table Size <1-127>
 // <i> Default: 3
 // <i> The number of entries that the binding table can hold.
-#define SL_ZIGBEE_BINDING_TABLE_SIZE   10
+#define SL_ZIGBEE_BINDING_TABLE_SIZE   32
+
+// <o SL_ZIGBEE_ADDRESS_TABLE_SIZE> Address Table Size <1-256>
+// <i> Default: 12
+// <i> The number of entries that the Address Table can hold.
+#define SL_ZIGBEE_ADDRESS_TABLE_SIZE   12
 
 // </h>
 

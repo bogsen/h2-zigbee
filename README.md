@@ -1,0 +1,120 @@
+# Aqara H2 Wall Switch — Custom Zigbee 3.0 Firmware
+
+Custom firmware for the Aqara H2 wall switch platform (EFR32MG24A410F1536IM48), replacing the stock Aqara firmware with a fully open Zigbee 3.0 implementation built on the Silicon Labs GSDK.
+
+## Project Goals
+
+- Mains-powered Zigbee 3.0 **router** with mesh routing capability
+- **On/Off relay control** via Zigbee commands and local buttons
+- **Coupled mode** (default): buttons control local relay directly
+- **Decoupled mode**: buttons send On/Off/Level commands to bound lights, relay controlled independently via coordinator
+- **Dual-color LED feedback** (red + blue per button) with smooth PWM transitions
+- **Manufacturer-specific cluster 0xFCC0** (Aqara Opple) for configuration attributes compatible with Z2M
+- **OTA firmware updates**
+- Scalable from 1-gang to 2-gang by adding a second endpoint
+
+## Hardware
+
+- **MCU**: EFR32MG24A410F1536IM48 (Cortex-M33, 1536KB Flash, 256KB RAM)
+- **Relay**: Secondary module controlled via UART (protocol being reverse-engineered)
+- **Buttons**: 2 per gang (up/down), active-low with debounce
+- **LEDs**: 2 per gang (up/down), each dual-color R+B controlled via TIMER PWM
+  - Top LED: TIMER0 CC0 (red, PD4) + CC1 (blue, PD5)
+  - Bottom LED: TIMER1 CC0 (red, PD2) + CC1 (blue, PD3)
+  - Active-low, 8-bit PWM resolution, ~2.4kHz
+
+## Endpoint Architecture (1-Gang)
+
+| Endpoint | Device Type | Purpose |
+|----------|-------------|---------|
+| 1 | HA On/Off Output (0x0002) | Relay + button config + LED config |
+| 242 | Green Power Proxy (0x0061) | Required for Zigbee 3.0 routers |
+
+### EP1 Server Clusters
+
+- **Basic** (0x0000) — Device identification
+- **Identify** (0x0003) — LED blink on identify
+- **Groups** (0x0004) — Group membership
+- **Scenes** (0x0005) — Scene recall
+- **On/Off** (0x0006) — Relay state with StartUpOnOff
+
+### EP1 Client Clusters
+
+- **On/Off** (0x0006) — Send to bound lights (decoupled mode)
+- **Level Control** (0x0008) — Brightness control to bound lights
+- **Identify** (0x0003) — Find-and-bind initiator
+- **Groups** (0x0004) — Group management on targets
+- **OTA Upgrade** (0x0019) — Firmware updates
+
+## Button Behavior
+
+### Coupled Mode (default)
+- **Up press** — Relay ON
+- **Down press** — Relay OFF
+- **Long press** — Same + reported to coordinator
+
+### Decoupled Mode
+- **Up press** — Send On to bindings
+- **Down press** — Send Off to bindings
+- **Long press up/down** — Send Level Move up/down to bindings
+- **Release** — Send Level Stop to bindings
+- **Double press** — Report only (automation trigger)
+
+### Commissioning
+- **Long press** (when not joined) — Start network steering
+
+## LED Modes
+
+Each button has an R+B dual-color LED. Color value 0=red, 100=blue.
+
+| Mode | Description |
+|------|-------------|
+| Follow Relay (default) | ON=on_color (red), OFF=off_color (blue) |
+| Follow Bound Light | Track On/Off reports from bound light |
+| Manual | Coordinator controls color + brightness directly |
+| Time Gradient | R-to-B interpolation based on time of day (planned) |
+
+## Current Status
+
+### Working
+- [x] Zigbee 3.0 router (joins network, routes traffic)
+- [x] On/Off cluster server — toggle from Z2M/ZHA
+- [x] Button state machine — single/double/long press detection
+- [x] Coupled mode — buttons control relay + sync to On/Off cluster
+- [x] Decoupled mode — buttons send On/Off/Level to bindings
+- [x] LED PWM driver — dual-color R+B with smooth transitions
+- [x] LED follow-relay mode — color changes on On/Off state
+- [x] Network steering — long press to join
+- [x] Find-and-bind initiator — auto-bind after joining
+- [x] Green Power proxy
+- [x] Attribute reporting (On/Off state)
+
+### In Progress / TODO
+- [ ] UART relay protocol (stub — stores state in RAM, no physical relay yet)
+- [ ] Manufacturer-specific cluster 0xFCC0 (Aqara Opple) attributes
+- [ ] Decoupled mode (code exists, needs 0xFCC0 `operation_mode` attribute to activate)
+- [ ] StartUpOnOff with NVM-backed previous state
+- [ ] Button action/side reporting via 0xFCC0
+- [ ] Factory reset (long press both buttons 10s)
+- [ ] OTA firmware updates (component included, untested)
+- [ ] LED follow-bound-light mode
+- [ ] LED time gradient mode
+- [ ] 2-gang support (add EP2)
+
+## Building & Flashing
+
+Requires [Simplicity Studio 6](https://www.silabs.com/developer-tools/simplicity-studio) with Simplicity SDK 2025.6.2.
+
+<!-- TODO: Add detailed build/flash instructions (project import, bootloader flashing, first-time setup, subsequent updates, NVM mass erase) -->
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `app.c` | Main application — button dispatch, relay sync, LED mode, commissioning |
+| `h2_button.c/h` | Button state machine (single/double/long/release detection) |
+| `h2_led.c/h` | LED PWM driver with smooth color transitions |
+| `h2_led_config.h` | LED pin and timer assignments |
+| `h2_relay.c/h` | Relay abstraction (UART stub for now) |
+| `config/zcl/zcl_config.zap` | ZCL cluster/endpoint configuration |
+| `h2_switch_1g.slcp` | Project component and configuration |

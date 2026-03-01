@@ -1,162 +1,277 @@
-/***************************************************************************//**
- * @file app.c
- * @brief Callbacks implementation and application specific code.
- *******************************************************************************
- * # License
- * <b>Copyright 2021 Silicon Laboratories Inc. www.silabs.com</b>
- *******************************************************************************
- *
- * The licensor of this software is Silicon Laboratories Inc. Your use of this
- * software is governed by the terms of Silicon Labs Master Software License
- * Agreement (MSLA) available at
- * www.silabs.com/about-us/legal/master-software-license-agreement. This
- * software is distributed to you in Source Code format and is governed by the
- * sections of the MSLA applicable to Source Code.
- *
- ******************************************************************************/
-
 #include "app/framework/include/af.h"
+
 #ifdef SL_COMPONENT_CATALOG_PRESENT
 #include "sl_component_catalog.h"
 #endif
-#include "network-steering.h"
-#include "zll-commissioning.h"
-#include "find-and-bind-initiator.h"
-#if defined(SL_CATALOG_POWER_MANAGER_PRESENT)
-#include "zigbee_sleep_config.h"
-#endif
-#if defined(SL_CATALOG_LED0_PRESENT)
-#include "sl_led.h"
-#include "sl_simple_led_instances.h"
-#define led_turn_on(led) sl_led_turn_on(led)
-#define led_turn_off(led) sl_led_turn_off(led)
-#define led_toggle(led) sl_led_toggle(led)
-#define COMMISSIONING_STATUS_LED     (&sl_led_led0)
-#else // !SL_CATALOG_LED0_PRESENT
-#define led_turn_on(led)
-#define led_turn_off(led)
-#define led_toggle(led)
-#endif // SL_CATALOG_LED0_PRESENT
 
-#if defined(SL_CATALOG_SIMPLE_BUTTON_PRESENT) && (SL_ZIGBEE_APP_FRAMEWORK_USE_BUTTON_TO_STAY_AWAKE == 0)
+#include "network-steering.h"
+#include "find-and-bind-initiator.h"
+#include "find-and-bind-target.h"
+
+#if defined(SL_CATALOG_SIMPLE_BUTTON_PRESENT)
 #include "sl_simple_button.h"
 #include "sl_simple_button_instances.h"
-#endif // SL_CATALOG_SIMPLE_BUTTON_PRESENT && SL_ZIGBEE_APP_FRAMEWORK_USE_BUTTON_TO_STAY_AWAKE == 0
+#endif
 
-#define LED_BLINK_PERIOD_MS          2000
-#define TRANSITION_TIME_DS           20
+#include "h2_relay.h"
+#include "h2_button.h"
+#include "h2_led.h"
+
+#ifndef H2_SWITCH_GANG_COUNT
+#define H2_SWITCH_GANG_COUNT 1
+#endif
+
+#define SWITCH_ENDPOINT           1
+#define BUTTON_TICK_MS            10
+#define LED_TICK_MS               20
 #define FINDING_AND_BINDING_DELAY_MS 3000
-#define BUTTON0                      0
-#define BUTTON1                      1
-#define SWITCH_ENDPOINT              1
+#define COMMISSIONING_HOLD_MS     5000
+#define FACTORY_RESET_HOLD_MS     10000
+
+// Operation modes (per-gang, matches 0xFCC0 attribute 0x0009)
+typedef enum {
+  OP_MODE_COUPLED   = 0,
+  OP_MODE_DECOUPLED = 1,
+} operation_mode_t;
+
+// Per-gang runtime state
+typedef struct {
+  uint8_t endpoint;
+  operation_mode_t op_mode;
+} gang_state_t;
+
+static gang_state_t gangs[H2_SWITCH_GANG_COUNT] = {
+  { .endpoint = 1, .op_mode = OP_MODE_COUPLED },
+#if H2_SWITCH_GANG_COUNT >= 2
+  { .endpoint = 2, .op_mode = OP_MODE_COUPLED },
+#endif
+};
 
 static bool commissioning = false;
-static uint8_t lastButton;
 
-static sl_zigbee_af_event_t commissioning_event;
-static sl_zigbee_af_event_t led_event;
+// Events
+static sl_zigbee_af_event_t button_tick_event;
+static sl_zigbee_af_event_t led_tick_event;
 static sl_zigbee_af_event_t finding_and_binding_event;
+static sl_zigbee_af_event_t commissioning_event;
 
-//---------------
-// Event handlers
+//--------------------------------------------------
+// Forward declarations
+static void button_tick_handler(sl_zigbee_af_event_t *event);
+static void led_tick_handler(sl_zigbee_af_event_t *event);
+static void finding_and_binding_handler(sl_zigbee_af_event_t *event);
+static void commissioning_event_handler(sl_zigbee_af_event_t *event);
+static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_action_t action);
+
+//--------------------------------------------------
+// Relay <-> On/Off cluster synchronization
+
+static void sync_relay_to_cluster(uint8_t gang)
+{
+  h2_relay_state_t state = h2_relay_get(gang);
+  uint8_t on_off_val = (state == H2_RELAY_ON) ? 1 : 0;
+  sl_zigbee_af_write_server_attribute(
+    gangs[gang].endpoint,
+    ZCL_ON_OFF_CLUSTER_ID,
+    ZCL_ON_OFF_ATTRIBUTE_ID,
+    &on_off_val,
+    ZCL_BOOLEAN_ATTRIBUTE_TYPE);
+  h2_led_update_relay_state(gang, state == H2_RELAY_ON);
+}
+
+//--------------------------------------------------
+// Coupled mode: button controls local relay
+
+static void handle_coupled(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
+{
+  if (action == H2_BTN_ACTION_RELEASE) {
+    return; // no relay action on release in coupled mode
+  }
+
+  if (side == H2_BTN_SIDE_UP) {
+    h2_relay_set(gang, H2_RELAY_ON);
+  } else {
+    h2_relay_set(gang, H2_RELAY_OFF);
+  }
+  sync_relay_to_cluster(gang);
+}
+
+//--------------------------------------------------
+// Decoupled mode: button sends ZCL commands to bindings
+
+static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
+{
+  uint8_t ep = gangs[gang].endpoint;
+  sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = ep;
+
+  switch (action) {
+    case H2_BTN_ACTION_SINGLE:
+      if (side == H2_BTN_SIDE_UP) {
+        sl_zigbee_af_fill_command_on_off_cluster_on();
+      } else {
+        sl_zigbee_af_fill_command_on_off_cluster_off();
+      }
+      sl_zigbee_af_send_command_unicast_to_bindings();
+      break;
+
+    case H2_BTN_ACTION_LONG:
+      if (side == H2_BTN_SIDE_UP) {
+        // Move up (increase brightness)
+        sl_zigbee_af_fill_command_level_control_cluster_move_with_on_off(0x00, 50);
+      } else {
+        // Move down (decrease brightness)
+        sl_zigbee_af_fill_command_level_control_cluster_move_with_on_off(0x01, 50);
+      }
+      sl_zigbee_af_send_command_unicast_to_bindings();
+      break;
+
+    case H2_BTN_ACTION_RELEASE:
+      sl_zigbee_af_fill_command_level_control_cluster_stop_with_on_off();
+      sl_zigbee_af_send_command_unicast_to_bindings();
+      break;
+
+    case H2_BTN_ACTION_DOUBLE:
+      // Double press: report-only (coordinator automation trigger), no ZCL command
+      break;
+  }
+}
+
+//--------------------------------------------------
+// Button callback (called from h2_button state machine via tick)
+
+static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
+{
+  sl_zigbee_app_debug_println("Button: gang=%d side=%d action=%d", gang, side, action);
+
+  if (sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
+    if (action == H2_BTN_ACTION_LONG) {
+      sl_zigbee_af_event_set_active(&commissioning_event);
+    }
+    return;
+  }
+
+  // Dispatch based on operation mode
+  if (gangs[gang].op_mode == OP_MODE_COUPLED) {
+    handle_coupled(gang, side, action);
+  } else {
+    handle_decoupled(gang, side, action);
+  }
+
+  // TODO: Report button_action and button_side via 0xFCC0 attribute reports
+}
+
+//--------------------------------------------------
+// Periodic tick events
+
+static void button_tick_handler(sl_zigbee_af_event_t *event)
+{
+  (void)event;
+  h2_button_tick();
+  sl_zigbee_af_event_set_delay_ms(&button_tick_event, BUTTON_TICK_MS);
+}
+
+static void led_tick_handler(sl_zigbee_af_event_t *event)
+{
+  (void)event;
+  h2_led_tick();
+  sl_zigbee_af_event_set_delay_ms(&led_tick_event, LED_TICK_MS);
+}
+
+//--------------------------------------------------
+// Commissioning
 
 static void commissioning_event_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
-  sl_status_t status;
 
-  if (sl_zigbee_af_network_state() == SL_ZIGBEE_JOINED_NETWORK) {
-    sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = SWITCH_ENDPOINT;
-    if (lastButton == BUTTON0) {
-      sl_zigbee_af_fill_command_on_off_cluster_toggle()
-    } else if (lastButton == BUTTON1) {
-      uint8_t nextLevel = (uint8_t)(0xFF & sl_zigbee_get_pseudo_random_number());
-      sl_zigbee_af_fill_command_level_control_cluster_move_to_level(nextLevel, TRANSITION_TIME_DS, 0, 0)
-    }
-    status = sl_zigbee_af_send_command_unicast_to_bindings();
-    sl_zigbee_app_debug_println("%s: 0x%02X", "Send to bindings", status);
-  } else {
-    bool touchlink = (lastButton == BUTTON1);
-    status = (touchlink
-              ? sl_zigbee_af_zll_initiate_touch_link()
-              : sl_zigbee_af_network_steering_start());
-    sl_zigbee_app_debug_println("%s network %s: 0x%02X",
-                                (touchlink ? "Touchlink" : "Join"),
-                                "start",
-                                status);
-
-    sl_zigbee_af_event_set_active(&led_event);
-
+  if (sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
+    sl_status_t status = sl_zigbee_af_network_steering_start();
+    sl_zigbee_app_debug_println("Join network start: 0x%02X", status);
     commissioning = true;
   }
 }
 
-static void led_event_handler(sl_zigbee_af_event_t *event)
-{
-  (void)event;
-
-  if (commissioning) {
-    if (sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
-      led_toggle(COMMISSIONING_STATUS_LED);
-      sl_zigbee_af_event_set_delay_ms(&led_event, LED_BLINK_PERIOD_MS << 1);
-    } else {
-      led_turn_on(COMMISSIONING_STATUS_LED);
-    }
-  } else if (sl_zigbee_af_network_state() == SL_ZIGBEE_JOINED_NETWORK) {
-    led_turn_on(COMMISSIONING_STATUS_LED);
-  }
-}
-
-static void finding_and_binding_event_handler(sl_zigbee_af_event_t *event)
+static void finding_and_binding_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
   sl_status_t status = sl_zigbee_af_find_and_bind_initiator_start(SWITCH_ENDPOINT);
-  sl_zigbee_app_debug_println("Find and bind initiator %s: 0x%02X", "start", status);
+  sl_zigbee_app_debug_println("Find and bind initiator start: 0x%02X", status);
 }
 
-//----------------------
-// Implemented Callbacks
-void sl_zigbee_af_main_init_cb(void)
-{
-  sl_zigbee_af_isr_event_init(&commissioning_event, commissioning_event_handler);
-  sl_zigbee_af_event_init(&led_event, led_event_handler);
-  sl_zigbee_af_event_init(&finding_and_binding_event, finding_and_binding_event_handler);
-}
+//--------------------------------------------------
+// Post-attribute-change callback
+// Called after ANY attribute value changes (including from On/Off server plugin)
 
-/** @brief Stack Status
- *
- * This function is called by the application framework from the stack status
- * handler.  This callbacks provides applications an opportunity to be notified
- * of changes to the stack status and take appropriate action. The framework
- * will always process the stack status after the callback returns.
- */
-void sl_zigbee_af_stack_status_cb(sl_status_t status)
+void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
+                                            sl_zigbee_af_cluster_id_t clusterId,
+                                            sl_zigbee_af_attribute_id_t attributeId,
+                                            uint8_t mask,
+                                            uint16_t manufacturerCode,
+                                            uint8_t type,
+                                            uint8_t size,
+                                            uint8_t *value)
 {
-  if (status == SL_STATUS_NETWORK_DOWN) {
-    led_turn_off(COMMISSIONING_STATUS_LED);
-  } else if (status == SL_STATUS_NETWORK_UP) {
-    led_turn_on(COMMISSIONING_STATUS_LED);
+  (void)mask;
+  (void)manufacturerCode;
+  (void)type;
+  (void)size;
+
+  if (clusterId != ZCL_ON_OFF_CLUSTER_ID || attributeId != ZCL_ON_OFF_ATTRIBUTE_ID) {
+    return;
+  }
+
+  uint8_t on_off_val = *value;
+
+  // Find which gang this endpoint belongs to
+  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    if (gangs[g].endpoint == endpoint) {
+      h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
+      h2_led_update_relay_state(g, on_off_val != 0);
+      sl_zigbee_app_debug_println("Relay %d: %s", g, on_off_val ? "ON" : "OFF");
+      break;
+    }
   }
 }
 
-/** @brief Complete network steering.
- *
- * This callback is fired when the Network Steering plugin is complete.
- *
- * @param status On success this will be set to SL_STATUS_OK to indicate a
- * network was joined successfully. On failure this will be the status code of
- * the last join or scan attempt.
- *
- * @param totalBeacons The total number of 802.15.4 beacons that were heard,
- * including beacons from different devices with the same PAN ID.
- *
- * @param joinAttempts The number of join attempts that were made to get onto
- * an open Zigbee network.
- *
- * @param finalState The finishing state of the network steering process. From
- * this, one is able to tell on which channel mask and with which key the
- * process was complete.
- */
+//--------------------------------------------------
+// Zigbee framework callbacks
+
+void sl_zigbee_af_main_init_cb(void)
+{
+  // Initialize hardware modules
+  h2_relay_init();
+  h2_button_init(on_button_action);
+  h2_led_init();
+
+  // Initialize events
+  sl_zigbee_af_event_init(&button_tick_event, button_tick_handler);
+  sl_zigbee_af_event_init(&led_tick_event, led_tick_handler);
+  sl_zigbee_af_event_init(&finding_and_binding_event, finding_and_binding_handler);
+  sl_zigbee_af_event_init(&commissioning_event, commissioning_event_handler);
+
+  // Start periodic ticks
+  sl_zigbee_af_event_set_delay_ms(&button_tick_event, BUTTON_TICK_MS);
+  sl_zigbee_af_event_set_delay_ms(&led_tick_event, LED_TICK_MS);
+
+  // Relay init state is handled in stack_status_cb on NETWORK_UP,
+  // when the ZCL attribute table is ready.
+  // TODO: Implement full StartUpOnOff with NVM-backed previous state
+}
+
+void sl_zigbee_af_stack_status_cb(sl_status_t status)
+{
+  if (status == SL_STATUS_NETWORK_UP) {
+    sl_zigbee_app_debug_println("Network UP");
+    // Restore LED mode after test mode may have set it to MANUAL
+    for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+      h2_led_set_mode(g, H2_LED_MODE_FOLLOW_RELAY);
+      sync_relay_to_cluster(g);
+    }
+  } else if (status == SL_STATUS_NETWORK_DOWN) {
+    sl_zigbee_app_debug_println("Network DOWN");
+  }
+}
+
 void sl_zigbee_af_network_steering_complete_cb(sl_status_t status,
                                                uint8_t totalBeacons,
                                                uint8_t joinAttempts,
@@ -166,7 +281,7 @@ void sl_zigbee_af_network_steering_complete_cb(sl_status_t status,
   (void)joinAttempts;
   (void)finalState;
 
-  sl_zigbee_app_debug_println("%s network %s: 0x%02X", "Join", "complete", status);
+  sl_zigbee_app_debug_println("Join network complete: 0x%02X", status);
 
   if (status != SL_STATUS_OK) {
     commissioning = false;
@@ -176,115 +291,48 @@ void sl_zigbee_af_network_steering_complete_cb(sl_status_t status,
   }
 }
 
-/** @brief Touch Link Complete
- *
- * This function is called by the ZLL Commissioning Common plugin when touch linking
- * completes.
- *
- * @param networkInfo The ZigBee and ZLL-specific information about the network
- * and target. Ver.: always
- * @param deviceInformationRecordCount The number of sub-device information
- * records for the target. Ver.: always
- * @param deviceInformationRecordList The list of sub-device information
- * records for the target. Ver.: always
- */
-void sl_zigbee_af_zll_commissioning_common_touch_link_complete_cb(const sl_zigbee_zll_network_t *networkInfo,
-                                                                  uint8_t deviceInformationRecordCount,
-                                                                  const sl_zigbee_zll_device_info_record_t *deviceInformationRecordList)
-{
-  (void)networkInfo;
-  (void)deviceInformationRecordCount;
-  (void)deviceInformationRecordList;
-
-  sl_zigbee_app_debug_println("%s network %s: 0x%02X",
-                              "Touchlink",
-                              "complete",
-                              SL_STATUS_OK);
-
-  sl_zigbee_af_event_set_delay_ms(&finding_and_binding_event,
-                                  FINDING_AND_BINDING_DELAY_MS);
-}
-
-/** @brief Touch Link Failed
- *
- * This function is called by the ZLL Commissioning Client plugin if touch linking
- * fails.
- *
- * @param status The reason the touch link failed. Ver.: always
- */
-void sl_zigbee_af_zll_commissioning_client_touch_link_failed_cb(sl_zigbee_af_zll_commissioning_status_t status)
-{
-  (void)status;
-
-  sl_zigbee_app_debug_println("%s network %s: 0x%02X",
-                              "Touchlink",
-                              "complete",
-                              SL_STATUS_FAIL);
-
-  commissioning = false;
-}
-
-/** @brief Find and Bind Complete
- *
- * This callback is fired by the initiator when the Find and Bind process is
- * complete.
- *
- * @param status Status code describing the completion of the find and bind
- * process Ver.: always
- */
 void sl_zigbee_af_find_and_bind_initiator_complete_cb(sl_status_t status)
 {
-  sl_zigbee_app_debug_println("Find and bind initiator %s: 0x%02X", "complete", status);
-
+  sl_zigbee_app_debug_println("Find and bind initiator complete: 0x%02X", status);
   commissioning = false;
 }
 
 #ifndef SL_CATALOG_ZIGBEE_EZSP_PRESENT
-/** @brief
- *
- * Application framework equivalent of ::sl_zigbee_radio_needs_calibrating_handler
- */
 void sl_zigbee_af_radio_needs_calibrating_cb(void)
 {
   sl_mac_calibrate_current_channel();
 }
-#endif //SL_CATALOG_ZIGBEE_EZSP_PRESENT
+#endif
 
-#if defined(SL_CATALOG_SIMPLE_BUTTON_PRESENT) && (SL_ZIGBEE_APP_FRAMEWORK_USE_BUTTON_TO_STAY_AWAKE == 0)
-/***************************************************************************//**
- * A callback called in interrupt context whenever a button changes its state.
- *
- * @remark Can be implemented by the application if required. This function
- * can contain the functionality to be executed in response to changes of state
- * in each of the buttons, or callbacks to appropriate functionality.
- *
- * @note The button state should not be updated in this function, it is updated
- * by specific button driver prior to arriving here
- *
-   @param[out] handle             Pointer to button instance
- ******************************************************************************/
+//--------------------------------------------------
+// Button ISR -> h2_button state machine
+
+#if defined(SL_CATALOG_SIMPLE_BUTTON_PRESENT)
 void sl_button_on_change(const sl_button_t *handle)
 {
-  if (SL_SIMPLE_BUTTON_INSTANCE(BUTTON0) == handle) {
-    if ( sl_button_get_state(handle) == SL_SIMPLE_BUTTON_RELEASED) {
-      lastButton = BUTTON0;
-      sl_zigbee_af_event_set_active(&commissioning_event);
-    }
-  } else if (SL_SIMPLE_BUTTON_INSTANCE(BUTTON1) == handle || sl_button_get_state(handle) == SL_SIMPLE_BUTTON_RELEASED) {
-    lastButton = BUTTON1;
-    sl_zigbee_af_event_set_active(&commissioning_event);
-  }
-}
-#endif // SL_CATALOG_SIMPLE_BUTTON_PRESENT && SL_ZIGBEE_APP_FRAMEWORK_USE_BUTTON_TO_STAY_AWAKE == 0
+  bool pressed = (sl_button_get_state(handle) == SL_SIMPLE_BUTTON_PRESSED);
 
-//Internal testing stuff
-#if defined(SL_ZIGBEE_TEST)
-void sl_zigbee_af_hal_button_isr_cb(uint8_t button,
-                                    uint8_t state)
-{
-  if (state == BUTTON_RELEASED) {
-    lastButton = button;
-    sl_zigbee_af_event_set_active(&commissioning_event);
+  // Map simple_button instances to button indices
+  // btn1 = index 0 (up button, gang 0)
+  // For 1-gang with only btn1: index 0 for press, treat as up
+  // TODO: Update mapping when additional button instances are added
+  if (SL_SIMPLE_BUTTON_INSTANCE(0) == handle) {
+    h2_button_on_change(0, pressed);  // gang 0, up
   }
+#if SL_SIMPLE_BUTTON_COUNT > 1
+  else if (SL_SIMPLE_BUTTON_INSTANCE(1) == handle) {
+    h2_button_on_change(1, pressed);  // gang 0, down
+  }
+#endif
+#if SL_SIMPLE_BUTTON_COUNT > 2
+  else if (SL_SIMPLE_BUTTON_INSTANCE(2) == handle) {
+    h2_button_on_change(2, pressed);  // gang 1, up
+  }
+#endif
+#if SL_SIMPLE_BUTTON_COUNT > 3
+  else if (SL_SIMPLE_BUTTON_INSTANCE(3) == handle) {
+    h2_button_on_change(3, pressed);  // gang 1, down
+  }
+#endif
 }
-#endif // SL_ZIGBEE_TEST
+#endif // SL_CATALOG_SIMPLE_BUTTON_PRESENT
