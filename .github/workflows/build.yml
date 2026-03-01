@@ -5,19 +5,21 @@ on:
   pull_request:
 
 env:
-  PROJECT_DIR: h2_switch_1g
-  # Keep these in sync with h2_switch_1g.slcp sdk version
+  # Keep these in sync with .slcp sdk version
   SLT_VERSION: "1.1.0"
   SDK_VERSION: "2025.6.2"
   SLC_VERSION: "6.0.15"
 
 jobs:
   build:
-    name: Build h2_switch_1g
+    name: Build firmware
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl1
 
       - name: Cache SLT installation
         id: cache-slt
@@ -39,7 +41,8 @@ jobs:
             simplicity-sdk/${{ env.SDK_VERSION }} \
             cmake/3.30.2 \
             ninja/1.12.1 \
-            zap/2025.12.02
+            zap/2025.12.02 \
+            commander
 
           # Clean download artifacts to reduce cache size
           rm -rf ~/.silabs/slt/installs/archive/*.zip 2>/dev/null || true
@@ -65,6 +68,7 @@ jobs:
           GCC_DIR="$(slt where gcc-arm-none-eabi)"
           CMAKE="$(slt where cmake)/bin/cmake"
           NINJA="$(slt where ninja)/ninja"
+          COMMANDER="$(slt where commander)/commander"
 
           # Put Java and tools on PATH for this step
           export PATH="${JAVA_BIN}:${SLC_DIR}:${PATH}"
@@ -75,6 +79,7 @@ jobs:
           echo "TOOL_PATH=${JAVA_BIN}:${SLC_DIR}" >> "$GITHUB_ENV"
           echo "CMAKE=${CMAKE}" >> "$GITHUB_ENV"
           echo "NINJA=${NINJA}" >> "$GITHUB_ENV"
+          echo "POST_BUILD_EXE=${COMMANDER}" >> "$GITHUB_ENV"
 
           # Verify tools
           "${GCC_DIR}/bin/arm-none-eabi-gcc" --version
@@ -89,7 +94,7 @@ jobs:
           slc signature trust --sdk "${SDK_PATH}"
 
           # Generate project files (autogen + cmake)
-          cd "${{ env.PROJECT_DIR }}"
+          cd "${GITHUB_WORKSPACE}/h2_switch_1g"
           slc generate \
             h2_switch_1g.slcp \
             --with EFR32MG24A410F1536IM48 \
@@ -97,22 +102,51 @@ jobs:
             --output-type cmake \
             --force
 
-      - name: CMake configure
+          cd "${GITHUB_WORKSPACE}/bootloader"
+          slc generate \
+            bootloader.slcp \
+            --with EFR32MG24A410F1536IM48 \
+            --toolchain toolchain_gcc \
+            --output-type cmake \
+            --force
+
+      - name: CMake configure h2_switch_1g
         run: |
-          cd "${{ env.PROJECT_DIR }}/cmake_gcc"
+          cd h2_switch_1g/cmake_gcc
           "${CMAKE}" --preset project
 
-      - name: CMake build
+      - name: CMake build h2_switch_1g
         run: |
-          cd "${{ env.PROJECT_DIR }}/cmake_gcc"
+          cd h2_switch_1g/cmake_gcc
           "${CMAKE}" --build --preset default_config
 
-      - name: Upload firmware artifacts
+      - name: CMake configure bootloader
+        run: |
+          cd bootloader/cmake_gcc
+          "${CMAKE}" --preset project
+
+      - name: CMake build bootloader
+        run: |
+          cd bootloader/cmake_gcc
+          "${CMAKE}" --build --preset default_config
+
+      - name: Upload h2_switch_1g artifacts
         uses: actions/upload-artifact@v4
         with:
           name: h2_switch_1g-firmware-${{ github.sha }}
           path: |
-            ${{ env.PROJECT_DIR }}/cmake_gcc/build/base/h2_switch_1g.hex
-            ${{ env.PROJECT_DIR }}/cmake_gcc/build/base/h2_switch_1g.bin
-            ${{ env.PROJECT_DIR }}/cmake_gcc/build/base/h2_switch_1g.s37
+            h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.hex
+            h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.bin
+            h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.s37
+          if-no-files-found: error
+
+      - name: Upload bootloader artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootloader-firmware-${{ github.sha }}
+          path: |
+            bootloader/cmake_gcc/build/base/bootloader.hex
+            bootloader/cmake_gcc/build/base/bootloader.bin
+            bootloader/cmake_gcc/build/base/bootloader.s37
+            bootloader/artifact/bootloader-crc.s37
           if-no-files-found: error
