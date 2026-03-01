@@ -154,6 +154,12 @@
 
 
 
+#ifndef BTN1_PORT                               
+#define BTN1_PORT                                SL_GPIO_PORT_B
+#endif
+#ifndef BTN1_PIN                                
+#define BTN1_PIN                                 4
+#endif
 
 
 
@@ -171,6 +177,12 @@
 
 
 
+#ifndef LED1_BLUE_PORT                          
+#define LED1_BLUE_PORT                           SL_GPIO_PORT_D
+#endif
+#ifndef LED1_BLUE_PIN                           
+#define LED1_BLUE_PIN                            5
+#endif
 
 // [CUSTOM_PIN_NAME]$
 

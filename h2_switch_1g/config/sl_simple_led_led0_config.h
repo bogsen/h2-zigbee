@@ -38,7 +38,7 @@
 // <SL_SIMPLE_LED_POLARITY_ACTIVE_LOW=> Active low
 // <SL_SIMPLE_LED_POLARITY_ACTIVE_HIGH=> Active high
 // <i> Default: SL_SIMPLE_LED_POLARITY_ACTIVE_HIGH
-#define SL_SIMPLE_LED_LED0_POLARITY SL_SIMPLE_LED_POLARITY_ACTIVE_HIGH
+#define SL_SIMPLE_LED_LED0_POLARITY SL_SIMPLE_LED_POLARITY_ACTIVE_LOW
 // </h> end led configuration
 
 // <<< end of configuration section >>>
@@ -47,9 +47,12 @@
 
 // <gpio> SL_SIMPLE_LED_LED0
 // $[GPIO_SL_SIMPLE_LED_LED0]
-#warning "Simple LED Driver GPIO pin not configured"
-// #define SL_SIMPLE_LED_LED0_PORT            SL_GPIO_PORT_A
-// #define SL_SIMPLE_LED_LED0_PIN             1
+#ifndef SL_SIMPLE_LED_LED0_PORT                 
+#define SL_SIMPLE_LED_LED0_PORT                  SL_GPIO_PORT_D
+#endif
+#ifndef SL_SIMPLE_LED_LED0_PIN                  
+#define SL_SIMPLE_LED_LED0_PIN                   5
+#endif
 // [GPIO_SL_SIMPLE_LED_LED0]$
 
 // <<< sl:end pin_tool >>>

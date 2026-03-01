@@ -48,9 +48,12 @@
 
 // <gpio> SL_SIMPLE_BUTTON_BTN1
 // $[GPIO_SL_SIMPLE_BUTTON_BTN1]
-#warning "Simple Button GPIO pin not configured"
-// #define SL_SIMPLE_BUTTON_BTN1_PORT       SL_GPIO_PORT_A
-// #define SL_SIMPLE_BUTTON_BTN1_PIN        0U
+#ifndef SL_SIMPLE_BUTTON_BTN1_PORT              
+#define SL_SIMPLE_BUTTON_BTN1_PORT               SL_GPIO_PORT_B
+#endif
+#ifndef SL_SIMPLE_BUTTON_BTN1_PIN               
+#define SL_SIMPLE_BUTTON_BTN1_PIN                4
+#endif
 // [GPIO_SL_SIMPLE_BUTTON_BTN1]$
 
 // <<< sl:end pin_tool >>>

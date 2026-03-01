@@ -1,0 +1,118 @@
+name: Build Firmware
+
+on:
+  push:
+  pull_request:
+
+env:
+  PROJECT_DIR: h2_switch_1g
+  # Keep these in sync with h2_switch_1g.slcp sdk version
+  SLT_VERSION: "1.1.0"
+  SDK_VERSION: "2025.6.2"
+  SLC_VERSION: "6.0.15"
+
+jobs:
+  build:
+    name: Build h2_switch_1g
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache SLT installation
+        id: cache-slt
+        uses: actions/cache@v4
+        with:
+          path: ~/.silabs
+          key: slt-${{ env.SLT_VERSION }}-sdk-${{ env.SDK_VERSION }}-slc-${{ env.SLC_VERSION }}
+
+      - name: Install SLT and SDK
+        if: steps.cache-slt.outputs.cache-hit != 'true'
+        run: |
+          wget -q "https://www.silabs.com/documents/public/software/slt-cli-${{ env.SLT_VERSION }}-linux-x64.zip" -O slt.zip
+          sudo unzip -o slt.zip -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/slt
+          rm slt.zip
+
+          slt --non-interactive install \
+            slc-cli/${{ env.SLC_VERSION }} \
+            simplicity-sdk/${{ env.SDK_VERSION }} \
+            cmake/3.30.2 \
+            ninja/1.12.1 \
+            zap/2025.12.02
+
+          # Clean download artifacts to reduce cache size
+          rm -rf ~/.silabs/slt/installs/archive/*.zip 2>/dev/null || true
+          rm -rf ~/.silabs/slt/installs/archive/*.tar.* 2>/dev/null || true
+          rm -rf ~/.silabs/slt/installs/conan/p/*/d/ 2>/dev/null || true
+
+      - name: Set up tools and generate project
+        run: |
+          # Ensure SLT is available
+          if ! command -v slt &>/dev/null; then
+            wget -q "https://www.silabs.com/documents/public/software/slt-cli-${{ env.SLT_VERSION }}-linux-x64.zip" -O slt.zip
+            sudo unzip -o slt.zip -d /usr/local/bin
+            sudo chmod +x /usr/local/bin/slt
+            rm slt.zip
+          fi
+
+          # Resolve tool paths
+          # Java 21 has jre/bin structure, find it dynamically
+          JAVA_HOME="$(slt where java21)"
+          JAVA_BIN="$(dirname "$(find "${JAVA_HOME}" -name java -type f | head -1)")"
+          SLC_DIR="$(slt where slc-cli)"
+          SDK_PATH="$(slt where simplicity-sdk/${{ env.SDK_VERSION }})"
+          GCC_DIR="$(slt where gcc-arm-none-eabi)"
+          CMAKE="$(slt where cmake)/bin/cmake"
+          NINJA="$(slt where ninja)/ninja"
+
+          # Put Java and tools on PATH for this step
+          export PATH="${JAVA_BIN}:${SLC_DIR}:${PATH}"
+
+          # Persist env vars for subsequent steps
+          echo "ARM_GCC_DIR=${GCC_DIR}" >> "$GITHUB_ENV"
+          echo "NINJA_EXE_PATH=${NINJA}" >> "$GITHUB_ENV"
+          echo "TOOL_PATH=${JAVA_BIN}:${SLC_DIR}" >> "$GITHUB_ENV"
+          echo "CMAKE=${CMAKE}" >> "$GITHUB_ENV"
+          echo "NINJA=${NINJA}" >> "$GITHUB_ENV"
+
+          # Verify tools
+          "${GCC_DIR}/bin/arm-none-eabi-gcc" --version
+          java --version
+          slc --version
+          "${CMAKE}" --version
+          "${NINJA}" --version
+
+          # Configure SLC
+          slc configuration --sdk="${SDK_PATH}"
+          slc configuration --gcc-toolchain="${GCC_DIR}"
+          slc signature trust --sdk "${SDK_PATH}"
+
+          # Generate project files (autogen + cmake)
+          cd "${{ env.PROJECT_DIR }}"
+          slc generate \
+            h2_switch_1g.slcp \
+            --with EFR32MG24A410F1536IM48 \
+            --toolchain toolchain_gcc \
+            --output-type cmake \
+            --force
+
+      - name: CMake configure
+        run: |
+          cd "${{ env.PROJECT_DIR }}/cmake_gcc"
+          "${CMAKE}" --preset project
+
+      - name: CMake build
+        run: |
+          cd "${{ env.PROJECT_DIR }}/cmake_gcc"
+          "${CMAKE}" --build --preset default_config
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2_switch_1g-firmware-${{ github.sha }}
+          path: |
+            ${{ env.PROJECT_DIR }}/cmake_gcc/build/base/h2_switch_1g.hex
+            ${{ env.PROJECT_DIR }}/cmake_gcc/build/base/h2_switch_1g.bin
+            ${{ env.PROJECT_DIR }}/cmake_gcc/build/base/h2_switch_1g.s37
+          if-no-files-found: error

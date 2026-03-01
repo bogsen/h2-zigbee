@@ -8,7 +8,6 @@ CMakePresets.json
 .vscode/
 artifact/
 trashed_modified_files/
-*.md
-*.png
 .DS_Store
+.uceditor/
 
