@@ -16,6 +16,7 @@
 #include "h2_relay.h"
 #include "h2_button.h"
 #include "h2_led.h"
+#include "h2_opple.h"
 
 #ifndef H2_SWITCH_GANG_COUNT
 #define H2_SWITCH_GANG_COUNT 1
@@ -28,22 +29,15 @@
 #define COMMISSIONING_HOLD_MS     5000
 #define FACTORY_RESET_HOLD_MS     10000
 
-// Operation modes (per-gang, matches 0xFCC0 attribute 0x0009)
-typedef enum {
-  OP_MODE_COUPLED   = 0,
-  OP_MODE_DECOUPLED = 1,
-} operation_mode_t;
-
 // Per-gang runtime state
 typedef struct {
   uint8_t endpoint;
-  operation_mode_t op_mode;
 } gang_state_t;
 
 static gang_state_t gangs[H2_SWITCH_GANG_COUNT] = {
-  { .endpoint = 1, .op_mode = OP_MODE_COUPLED },
+  { .endpoint = 1 },
 #if H2_SWITCH_GANG_COUNT >= 2
-  { .endpoint = 2, .op_mode = OP_MODE_COUPLED },
+  { .endpoint = 2 },
 #endif
 };
 
@@ -77,6 +71,7 @@ static void sync_relay_to_cluster(uint8_t gang)
     &on_off_val,
     ZCL_BOOLEAN_ATTRIBUTE_TYPE);
   h2_led_update_relay_state(gang, state == H2_RELAY_ON);
+  h2_opple_save_relay_state(gang, state == H2_RELAY_ON);
 }
 
 //--------------------------------------------------
@@ -150,14 +145,29 @@ static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_acti
     return;
   }
 
+  // Map button action to Aqara action values for reporting
+  // 0=hold, 1=single, 2=double, 255=release
+  static const uint8_t action_map[] = {
+    [H2_BTN_ACTION_RELEASE] = 255,
+    [H2_BTN_ACTION_SINGLE]  = 1,
+    [H2_BTN_ACTION_DOUBLE]  = 2,
+    [H2_BTN_ACTION_LONG]    = 0,
+  };
+
+  // Map (gang, side) to the endpoint for button action reporting
+  // 1-gang: up=EP1, down=EP4.  2-gang: gang0 up=EP1 down=EP4, gang1 up=EP2 down=EP5
+  uint8_t report_ep = gangs[gang].endpoint
+                      + ((side == H2_BTN_SIDE_DOWN) ? 3 : 0);
+
   // Dispatch based on operation mode
-  if (gangs[gang].op_mode == OP_MODE_COUPLED) {
+  if (h2_opple_get_op_mode(gang) == OPPLE_OP_MODE_CONTROL_RELAY) {
     handle_coupled(gang, side, action);
   } else {
     handle_decoupled(gang, side, action);
   }
 
-  // TODO: Report button_action and button_side via 0xFCC0 attribute reports
+  // Report button event to coordinator via genMultistateInput
+  h2_opple_report_action(report_ep, action_map[action]);
 }
 
 //--------------------------------------------------
@@ -216,7 +226,8 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
   (void)type;
   (void)size;
 
-  if (clusterId != ZCL_ON_OFF_CLUSTER_ID || attributeId != ZCL_ON_OFF_ATTRIBUTE_ID) {
+  if (clusterId != ZCL_ON_OFF_CLUSTER_ID
+      || attributeId != ZCL_ON_OFF_ATTRIBUTE_ID) {
     return;
   }
 
@@ -227,6 +238,7 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
     if (gangs[g].endpoint == endpoint) {
       h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
       h2_led_update_relay_state(g, on_off_val != 0);
+      h2_opple_save_relay_state(g, on_off_val != 0);
       sl_zigbee_app_debug_println("Relay %d: %s", g, on_off_val ? "ON" : "OFF");
       break;
     }
@@ -242,6 +254,7 @@ void sl_zigbee_af_main_init_cb(void)
   h2_relay_init();
   h2_button_init(on_button_action);
   h2_led_init();
+  h2_opple_init();
 
   // Initialize events
   sl_zigbee_af_event_init(&button_tick_event, button_tick_handler);
@@ -252,19 +265,14 @@ void sl_zigbee_af_main_init_cb(void)
   // Start periodic ticks
   sl_zigbee_af_event_set_delay_ms(&button_tick_event, BUTTON_TICK_MS);
   sl_zigbee_af_event_set_delay_ms(&led_tick_event, LED_TICK_MS);
-
-  // Relay init state is handled in stack_status_cb on NETWORK_UP,
-  // when the ZCL attribute table is ready.
-  // TODO: Implement full StartUpOnOff with NVM-backed previous state
 }
 
 void sl_zigbee_af_stack_status_cb(sl_status_t status)
 {
   if (status == SL_STATUS_NETWORK_UP) {
     sl_zigbee_app_debug_println("Network UP");
-    // Restore LED mode after test mode may have set it to MANUAL
     for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
-      h2_led_set_mode(g, H2_LED_MODE_FOLLOW_RELAY);
+      h2_opple_apply_power_on_behavior(g);
       sync_relay_to_cluster(g);
     }
   } else if (status == SL_STATUS_NETWORK_DOWN) {
@@ -303,6 +311,21 @@ void sl_zigbee_af_radio_needs_calibrating_cb(void)
   sl_mac_calibrate_current_channel();
 }
 #endif
+
+//--------------------------------------------------
+// Pre-message-received: intercept cluster 0xFCC0 before framework processing
+
+bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
+{
+  if (msg->apsFrame->clusterId != OPPLE_CLUSTER_ID) {
+    return false;
+  }
+
+  return h2_opple_handle_message(msg->apsFrame->destinationEndpoint,
+                                 msg->source,
+                                 msg->message,
+                                 msg->msgLen);
+}
 
 //--------------------------------------------------
 // Button ISR -> h2_button state machine

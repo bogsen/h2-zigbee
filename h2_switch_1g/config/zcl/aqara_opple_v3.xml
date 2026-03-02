@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<configurator>
+  <domain name="Aqara"/>
+
+  <cluster manufacturerCode="0x115F">
+    <name>Aqara Opple</name>
+    <domain>Aqara</domain>
+    <description>Manufacturer-specific cluster for Aqara device configuration</description>
+    <code>0xFCC0</code>
+    <define>AQARA_OPPLE_CLUSTER</define>
+    <client init="false" tick="false">true</client>
+    <server init="false" tick="false">true</server>
+
+    <globalAttribute side="either" code="0xFFFD" value="1"/>
+
+    <!-- Mode: 0=command, 1=event (Z2M sets to 1 during configure) -->
+    <attribute side="server" code="0x0009" define="OPPLE_MODE"
+               type="INT8U" writable="true" default="0x01" optional="false">
+      mode
+    </attribute>
+
+    <!-- Switch type: 1=toggle, 2=momentary, 3=none -->
+    <attribute side="server" code="0x000A" define="OPPLE_SWITCH_TYPE"
+               type="INT8U" writable="true" default="0x02" optional="false">
+      switch type
+    </attribute>
+
+    <!-- Flip indicator light: 0=normal, 1=flipped -->
+    <attribute side="server" code="0x00F0" define="OPPLE_FLIP_INDICATOR"
+               type="INT8U" writable="true" default="0x00" optional="false">
+      flip indicator light
+    </attribute>
+
+    <!-- Operation mode: 0=decoupled, 1=control_relay -->
+    <attribute side="server" code="0x0200" define="OPPLE_OPERATION_MODE"
+               type="INT8U" writable="true" default="0x01" optional="false">
+      operation mode
+    </attribute>
+
+    <!-- LED indicator: 0=OFF, 1=ON -->
+    <attribute side="server" code="0x0203" define="OPPLE_LED_INDICATOR"
+               type="BOOLEAN" writable="true" default="0x01" optional="false">
+      led indicator
+    </attribute>
+
+    <!-- Lock relay: 0=unlocked, 1=locked -->
+    <attribute side="server" code="0x0285" define="OPPLE_LOCK_RELAY"
+               type="INT8U" writable="true" default="0x00" optional="false">
+      lock relay
+    </attribute>
+
+    <!-- Multi-click mode: 1=disabled, 2=enabled -->
+    <attribute side="server" code="0x0286" define="OPPLE_MULTI_CLICK"
+               type="INT8U" writable="true" default="0x01" optional="false">
+      multi click mode
+    </attribute>
+
+    <!-- Power-on behavior: 0=on, 1=previous, 2=off, 3=inverted -->
+    <attribute side="server" code="0x0517" define="OPPLE_POWER_ON_BEHAVIOR"
+               type="INT8U" writable="true" default="0x01" optional="false">
+      power on behavior
+    </attribute>
+  </cluster>
+</configurator>

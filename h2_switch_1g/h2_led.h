@@ -21,6 +21,14 @@ typedef enum {
 // Initialize LED PWM hardware
 void h2_led_init(void);
 
+// Enable or disable the LED indicator for a gang.
+// When disabled, both LEDs are turned off regardless of mode.
+void h2_led_set_enabled(uint8_t gang, bool enabled);
+
+// Invert the on/off color mapping for a gang.
+// When inverted, on_color is shown when relay is off and vice versa.
+void h2_led_set_inverted(uint8_t gang, bool inverted);
+
 // Set LED mode for a gang
 void h2_led_set_mode(uint8_t gang, h2_led_mode_t mode);
 

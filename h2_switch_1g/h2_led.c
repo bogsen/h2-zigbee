@@ -22,6 +22,8 @@ typedef struct {
 
 typedef struct {
   h2_led_mode_t mode;
+  bool enabled;        // indicator on/off
+  bool inverted;       // swap on/off colors
   uint8_t brightness;  // 0-100
   uint8_t on_color;    // 0-100 (R->B)
   uint8_t off_color;   // 0-100 (R->B)
@@ -133,22 +135,23 @@ static void update_targets(uint8_t gang)
 {
   gang_led_t *g = &gangs[gang];
 
-  switch (g->mode) {
-    case H2_LED_MODE_FOLLOW_RELAY:
-      if (g->relay_on) {
-        set_target(g, g->on_color, g->brightness);
-      } else {
-        set_target(g, g->off_color, g->brightness);
-      }
-      break;
+  if (!g->enabled) {
+    set_target(g, 0, 0);
+    return;
+  }
 
-    case H2_LED_MODE_FOLLOW_LIGHT:
-      if (g->light_on) {
-        set_target(g, g->on_color, g->brightness);
-      } else {
-        set_target(g, g->off_color, g->brightness);
-      }
+  switch (g->mode) {
+    case H2_LED_MODE_FOLLOW_RELAY: {
+      bool active = g->inverted ? !g->relay_on : g->relay_on;
+      set_target(g, g->on_color, active ? g->brightness : 0);
       break;
+    }
+
+    case H2_LED_MODE_FOLLOW_LIGHT: {
+      bool active = g->inverted ? !g->light_on : g->light_on;
+      set_target(g, g->on_color, active ? g->brightness : 0);
+      break;
+    }
 
     case H2_LED_MODE_MANUAL:
       set_target(g, g->manual_color, g->brightness);
@@ -192,6 +195,7 @@ void h2_led_init(void)
 
   // Initialize gang 0 LED state
   gangs[0].mode = H2_LED_MODE_FOLLOW_RELAY;
+  gangs[0].enabled = true;
   gangs[0].brightness = 100;
   gangs[0].on_color = 10;
   gangs[0].off_color = 90;
@@ -222,6 +226,7 @@ void h2_led_init(void)
 #if H2_SWITCH_GANG_COUNT >= 2
   // TODO: Initialize gang 1 LEDs with TIMER2/TIMER3
   gangs[1].mode = H2_LED_MODE_FOLLOW_RELAY;
+  gangs[1].enabled = true;
   gangs[1].brightness = 100;
   gangs[1].on_color = 10;
   gangs[1].off_color = 90;
@@ -234,6 +239,20 @@ void h2_led_init(void)
   for (uint8_t i = 0; i < H2_SWITCH_GANG_COUNT; i++) {
     update_targets(i);
   }
+}
+
+void h2_led_set_enabled(uint8_t gang, bool enabled)
+{
+  if (gang >= H2_SWITCH_GANG_COUNT) return;
+  gangs[gang].enabled = enabled;
+  update_targets(gang);
+}
+
+void h2_led_set_inverted(uint8_t gang, bool inverted)
+{
+  if (gang >= H2_SWITCH_GANG_COUNT) return;
+  gangs[gang].inverted = inverted;
+  update_targets(gang);
 }
 
 void h2_led_set_mode(uint8_t gang, h2_led_mode_t mode)
