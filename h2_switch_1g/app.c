@@ -84,15 +84,21 @@ static void handle_coupled(uint8_t gang, h2_button_side_t side, h2_button_action
   }
 
   if (side == H2_BTN_SIDE_UP) {
-    h2_relay_set(gang, H2_RELAY_ON);
-  } else {
     h2_relay_set(gang, H2_RELAY_OFF);
+  } else {
+    h2_relay_set(gang, H2_RELAY_ON);
   }
   sync_relay_to_cluster(gang);
 }
 
 //--------------------------------------------------
 // Decoupled mode: button sends ZCL commands to bindings
+
+static void send_to_bindings(void)
+{
+  sl_zigbee_af_send_command_unicast_to_bindings();
+  sl_zigbee_af_send_command_multicast_to_bindings();
+}
 
 static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
 {
@@ -101,28 +107,28 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
 
   switch (action) {
     case H2_BTN_ACTION_SINGLE:
-      if (side == H2_BTN_SIDE_UP) {
-        sl_zigbee_af_fill_command_on_off_cluster_on();
+      if (side == H2_BTN_SIDE_DOWN) {
+        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 10);
       } else {
         sl_zigbee_af_fill_command_on_off_cluster_off();
       }
-      sl_zigbee_af_send_command_unicast_to_bindings();
+      send_to_bindings();
       break;
 
     case H2_BTN_ACTION_LONG:
-      if (side == H2_BTN_SIDE_UP) {
-        // Move up (increase brightness)
-        sl_zigbee_af_fill_command_level_control_cluster_move_with_on_off(0x00, 50);
+      if (side == H2_BTN_SIDE_DOWN) {
+        // Transition to max brightness (turns on at minimum if off)
+        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 40);
       } else {
-        // Move down (decrease brightness)
-        sl_zigbee_af_fill_command_level_control_cluster_move_with_on_off(0x01, 50);
+        // Transition to minimum (no on/off to avoid abrupt off at level 0)
+        sl_zigbee_af_fill_command_level_control_cluster_move_to_level(0, 40, 0, 0);
       }
-      sl_zigbee_af_send_command_unicast_to_bindings();
+      send_to_bindings();
       break;
 
     case H2_BTN_ACTION_RELEASE:
       sl_zigbee_af_fill_command_level_control_cluster_stop_with_on_off();
-      sl_zigbee_af_send_command_unicast_to_bindings();
+      send_to_bindings();
       break;
 
     case H2_BTN_ACTION_DOUBLE:

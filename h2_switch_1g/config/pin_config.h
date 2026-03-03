@@ -140,6 +140,22 @@
 // [I2C1]$
 
 // $[EUSART1]
+// EUSART1 RX on PA06
+#ifndef EUSART1_RX_PORT                         
+#define EUSART1_RX_PORT                          SL_GPIO_PORT_A
+#endif
+#ifndef EUSART1_RX_PIN                          
+#define EUSART1_RX_PIN                           6
+#endif
+
+// EUSART1 TX on PA05
+#ifndef EUSART1_TX_PORT                         
+#define EUSART1_TX_PORT                          SL_GPIO_PORT_A
+#endif
+#ifndef EUSART1_TX_PIN                          
+#define EUSART1_TX_PIN                           5
+#endif
+
 // [EUSART1]$
 
 // $[KEYSCAN]
@@ -182,11 +198,11 @@
 // [MODEM]$
 
 // $[CUSTOM_PIN_NAME]
-#ifndef _PORT                                   
-#define _PORT                                    SL_GPIO_PORT_A
+#ifndef WALL7_PORT                              
+#define WALL7_PORT                               SL_GPIO_PORT_A
 #endif
-#ifndef _PIN                                    
-#define _PIN                                     0
+#ifndef WALL7_PIN                               
+#define WALL7_PIN                                0
 #endif
 
 #ifndef SWCLK_PORT                              
@@ -203,14 +219,50 @@
 #define SWDIO_PIN                                2
 #endif
 
+#ifndef _PORT                                   
+#define _PORT                                    SL_GPIO_PORT_A
+#endif
+#ifndef _PIN                                    
+#define _PIN                                     3
+#endif
+
+
+#ifndef WALL4_PORT                              
+#define WALL4_PORT                               SL_GPIO_PORT_A
+#endif
+#ifndef WALL4_PIN                               
+#define WALL4_PIN                                5
+#endif
+
+#ifndef WALL6_PORT                              
+#define WALL6_PORT                               SL_GPIO_PORT_A
+#endif
+#ifndef WALL6_PIN                               
+#define WALL6_PIN                                6
+#endif
+
+#ifndef WALL3_PORT                              
+#define WALL3_PORT                               SL_GPIO_PORT_A
+#endif
+#ifndef WALL3_PIN                               
+#define WALL3_PIN                                7
+#endif
 
 
 
+#ifndef WALL5_PORT                              
+#define WALL5_PORT                               SL_GPIO_PORT_B
+#endif
+#ifndef WALL5_PIN                               
+#define WALL5_PIN                                0
+#endif
 
-
-
-
-
+#ifndef WALL2_PORT                              
+#define WALL2_PORT                               SL_GPIO_PORT_B
+#endif
+#ifndef WALL2_PIN                               
+#define WALL2_PIN                                1
+#endif
 
 
 #ifndef BTN1_PORT                               
@@ -234,9 +286,33 @@
 
 
 
+#ifndef LED4_BLUE_PORT                          
+#define LED4_BLUE_PORT                           SL_GPIO_PORT_C
+#endif
+#ifndef LED4_BLUE_PIN                           
+#define LED4_BLUE_PIN                            6
+#endif
 
+#ifndef LED4_RED_PORT                           
+#define LED4_RED_PORT                            SL_GPIO_PORT_C
+#endif
+#ifndef LED4_RED_PIN                            
+#define LED4_RED_PIN                             7
+#endif
 
+#ifndef LED3_BLUE_PORT                          
+#define LED3_BLUE_PORT                           SL_GPIO_PORT_C
+#endif
+#ifndef LED3_BLUE_PIN                           
+#define LED3_BLUE_PIN                            8
+#endif
 
+#ifndef LED3_RED_PORT                           
+#define LED3_RED_PORT                            SL_GPIO_PORT_C
+#endif
+#ifndef LED3_RED_PIN                            
+#define LED3_RED_PIN                             9
+#endif
 
 
 

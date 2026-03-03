@@ -2,10 +2,22 @@
 <device:XMLDevice xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:device="http://www.silabs.com/ss/hwconfig/document/device.ecore" name="pin_tool.EFR32MG24A410F1536IM48" partId="mcu.arm.efr32.mg24.efr32mg24a410f1536im48" contextId="com.silabs.sdk.stack.sisdk:2025.6.2._1249718913-2373502477">
   <mode name="DefaultMode">
     <property object="DefaultMode" propertyId="mode.diagramLocation" value="100, 100"/>
+    <property object="EUSART0" propertyId="ABPeripheral.included" value="true"/>
+    <property object="EUSART1" propertyId="ABModule.selectedRequirement" value="eusart%T%SL_UARTDRV_EUSART_WALL_UART%T%sl_uartdrv_eusart_wall_uart_config.h"/>
+    <property object="EUSART1" propertyId="ABPeripheral.included" value="true"/>
     <property object="GPIO" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_DEBUG%T%sl_debug_swo_config.h"/>
     <property object="GPIO" propertyId="ABPeripheral.included" value="true"/>
+    <property object="PA00" propertyId="pin.name" value="WALL7"/>
     <property object="PA01" propertyId="pin.name" value="SWCLK"/>
     <property object="PA02" propertyId="pin.name" value="SWDIO"/>
+    <property object="PA03" propertyId="pin.name" value=""/>
+    <property object="PA05" propertyId="pin.name" value="WALL4"/>
+    <property object="PA06" propertyId="pin.name" value="WALL6"/>
+    <property object="PA07" propertyId="pin.name" value="WALL3"/>
+    <property object="PA08" propertyId="pin.name" value=""/>
+    <property object="PB00" propertyId="pin.name" value="WALL5"/>
+    <property object="PB00" propertyId="pin.reserve" value="Reserved"/>
+    <property object="PB01" propertyId="pin.name" value="WALL2"/>
     <property object="PB03" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_SIMPLE_BUTTON_BTN1%T%sl_simple_button_btn1_config.h"/>
     <property object="PB03" propertyId="pin.name" value="BTN1"/>
     <property object="PB03" propertyId="pin.reserve" value="Reserved"/>
@@ -13,10 +25,21 @@
     <property object="PB05" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_SIMPLE_BUTTON_BTN2%T%sl_simple_button_btn2_config.h"/>
     <property object="PB05" propertyId="pin.name" value="BTN2"/>
     <property object="PB05" propertyId="pin.reserve" value="Reserved"/>
+    <property object="PC06" propertyId="pin.name" value="LED4_BLUE"/>
+    <property object="PC07" propertyId="pin.name" value="LED4_RED"/>
+    <property object="PC08" propertyId="pin.name" value="LED3_BLUE"/>
+    <property object="PC09" propertyId="pin.name" value="LED3_RED"/>
     <property object="PD02" propertyId="pin.name" value="LED2_BLUE"/>
     <property object="PD03" propertyId="pin.name" value="LED2_RED"/>
     <property object="PD04" propertyId="pin.name" value="LED1_RED"/>
     <property object="PD05" propertyId="pin.name" value="LED1_BLUE"/>
+    <property object="PORTIO" propertyId="portio.eusart0.location.cts" value="2"/>
+    <property object="PORTIO" propertyId="portio.eusart0.location.rts" value="3"/>
+    <property object="PORTIO" propertyId="portio.eusart0.location.rx" value="1"/>
+    <property object="PORTIO" propertyId="portio.eusart1.enable.rx" value="Enabled"/>
+    <property object="PORTIO" propertyId="portio.eusart1.enable.tx" value="Enabled"/>
+    <property object="PORTIO" propertyId="portio.eusart1.location.rx" value="6"/>
+    <property object="PORTIO" propertyId="portio.eusart1.location.tx" value="5"/>
     <property object="PORTIO" propertyId="portio.gpio.enable.swclk" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.gpio.enable.swdio" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.timer0.enable.cc0" value="Enabled"/>

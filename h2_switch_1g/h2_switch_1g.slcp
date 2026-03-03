@@ -35,6 +35,8 @@ component:
   id: simple_button
 - {id: sl_main}
 - {id: toolchain_gcc_lto}
+- instance: [wall_uart]
+  id: uartdrv_eusart
 - {id: zigbee_application_bootloader}
 - {id: zigbee_basic}
 - {id: zigbee_core_cli}

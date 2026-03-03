@@ -59,7 +59,7 @@ typedef struct {
   uint8_t switch_type;       // 1=toggle, 2=momentary, 3=none
   uint8_t flip_indicator;    // coupled: invert LED; independent: LED on
   uint8_t operation_mode;    // 0=decoupled, 1=control_relay
-  uint8_t led_indicator;     // 0=LED coupled to relay, 1=LED independent
+  uint8_t led_indicator;     // 0=LED independent, 1=LED coupled to relay
   uint8_t lock_relay;        // LED color: 0=blue, 1=red
   uint8_t multi_click;       // 1=disabled, 2=enabled
   uint8_t power_on_behavior; // 0=on, 1=previous, 2=off, 3=inverted
@@ -225,7 +225,7 @@ static void update_gang_leds(uint8_t gang)
   // Color: blue=90, red=10
   uint8_t color = g->lock_relay ? 10 : 90;
 
-  if (g->led_indicator == 0) {
+  if (g->led_indicator) {
     // Coupled to relay: LED on when relay on (color), off when relay off
     // flip_indicator inverts: LED off when relay on, on when relay off
     h2_led_set_mode(gang, H2_LED_MODE_FOLLOW_RELAY);

@@ -8,7 +8,7 @@
 #define H2_SWITCH_GANG_COUNT 1
 #endif
 
-#define TRANSITION_STEPS 10  // ~200ms at 20ms tick rate
+#define TRANSITION_STEPS 5  // ~500ms perceived with exponential easing at 20ms tick
 
 typedef struct {
   uint8_t current_red;   // 0-255 PWM duty
