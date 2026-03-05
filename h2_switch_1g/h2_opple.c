@@ -226,14 +226,15 @@ static void update_gang_leds(uint8_t gang)
   uint8_t color = g->lock_relay ? 10 : 90;
 
   if (g->led_indicator) {
-    // Coupled to relay: LED on when relay on (color), off when relay off
-    // flip_indicator inverts: LED off when relay on, on when relay off
-    h2_led_set_mode(gang, H2_LED_MODE_FOLLOW_RELAY);
+    bool decoupled = (g->operation_mode != OPPLE_OP_MODE_CONTROL_RELAY);
+    // Decoupled: follow bound light state; Coupled: follow local relay
+    h2_led_set_mode(gang, decoupled ? H2_LED_MODE_FOLLOW_LIGHT
+                                    : H2_LED_MODE_FOLLOW_RELAY);
     h2_led_set_on_color(gang, color);
     h2_led_set_inverted(gang, g->flip_indicator != 0);
     h2_led_set_enabled(gang, true);
   } else {
-    // Independent: flip_indicator controls on/off directly
+    // Manual mode: flip_indicator controls on/off directly
     h2_led_set_mode(gang, H2_LED_MODE_MANUAL);
     h2_led_set_manual(gang, color, 100);
     h2_led_set_enabled(gang, g->flip_indicator != 0);
@@ -268,6 +269,7 @@ static void apply_attribute(uint8_t gang, uint16_t attr_id, uint8_t value)
     case OPPLE_ATTR_OPERATION_MODE:
       g->operation_mode = value;
       nvm3_write_u8(NVM3_KEY(gang, NVM3_OFF_OP_MODE), value);
+      update_gang_leds(gang);
       break;
 
     case OPPLE_ATTR_LED_INDICATOR:
@@ -386,7 +388,11 @@ void h2_opple_init(void)
     gangs[g].power_on_behavior = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_POWER_ON_BEHAVIOR), 1); // previous
   }
 
-  // Apply LED indicator state for each gang
+  h2_opple_init_leds();
+}
+
+void h2_opple_init_leds(void)
+{
   for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
     update_gang_leds(g);
   }

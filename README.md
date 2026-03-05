@@ -61,7 +61,8 @@ Custom firmware for the Aqara H2 wall switch platform (EFR32MG24A410F1536IM48), 
 - **Long press up** — Send Level Move down to bindings
 - **Release** — Send Level Stop to bindings
 - **Double press** — Report only (automation trigger)
-- External ZCL On/Off writes still control the local relay
+- Direct ZCL On/Off commands (to EP1) still control the local relay
+- LED follows bound light state (On/Off reports + optimistic updates)
 
 ### Commissioning
 - **Long press** (when not joined) — Start network steering
@@ -98,11 +99,15 @@ Each button has an R+B dual-color LED. Color value 0=red, 100=blue.
 - [x] Decoupled mode — buttons send to bindings, relay via coordinator
 - [x] NVM-backed power-on behavior (on/previous/off/inverted)
 - [x] Button action/side reporting via genMultistateInput
-- [ ] Factory reset (long press both buttons 10s)
-- [ ] OTA firmware updates (component included, untested)
-- [ ] LED follow-bound-light mode
+- [x] Factory reset (long press both buttons 10s)
+- [x] OTA firmware updates (LZMA-compressed, ~15 min as router)
+- [x] LED follow-bound-light mode (decoupled: auto, coupled: follow relay)
 - [ ] LED time gradient mode
 - [ ] 2-gang support (add EP2)
+- [ ] No-neutral mode (maintain minimum current for MCU power)
+- [ ] Power/energy monitoring (electrical measurement cluster)
+- [ ] Temperature sensor (device temperature cluster)
+- [ ] Dimmer switch variant (level control server + TRIAC/PWM dimming)
 
 ## Building & Flashing
 

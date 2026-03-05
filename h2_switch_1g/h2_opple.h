@@ -50,4 +50,7 @@ void h2_opple_save_relay_state(uint8_t gang, bool relay_on);
 // Call on NETWORK_UP.
 void h2_opple_apply_power_on_behavior(uint8_t gang);
 
+// Re-apply LED settings from current opple config for all gangs.
+void h2_opple_init_leds(void);
+
 #endif // H2_OPPLE_H

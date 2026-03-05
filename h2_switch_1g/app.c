@@ -13,6 +13,7 @@
 #include "sl_simple_button_instances.h"
 #endif
 
+#include "nvm3_default.h"
 #include "btl_interface.h"
 #include "slot-manager.h"
 #include "h2_relay.h"
@@ -24,7 +25,7 @@
 #define H2_SWITCH_GANG_COUNT 1
 #endif
 
-#define H2_FIRMWARE_VERSION  0x0000001d  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000024  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define SWITCH_ENDPOINT           1
@@ -48,11 +49,16 @@ static gang_state_t gangs[H2_SWITCH_GANG_COUNT] = {
 
 static bool commissioning = false;
 
+// Factory reset state
+static bool factory_reset_active = false;
+static uint16_t factory_reset_timer_ms = 0;
+
 // Events
 static sl_zigbee_af_event_t button_tick_event;
 static sl_zigbee_af_event_t led_tick_event;
 static sl_zigbee_af_event_t finding_and_binding_event;
 static sl_zigbee_af_event_t commissioning_event;
+static sl_zigbee_af_event_t factory_reset_event;
 
 //--------------------------------------------------
 // Forward declarations
@@ -60,6 +66,7 @@ static void button_tick_handler(sl_zigbee_af_event_t *event);
 static void led_tick_handler(sl_zigbee_af_event_t *event);
 static void finding_and_binding_handler(sl_zigbee_af_event_t *event);
 static void commissioning_event_handler(sl_zigbee_af_event_t *event);
+static void factory_reset_event_handler(sl_zigbee_af_event_t *event);
 static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_action_t action);
 
 //--------------------------------------------------
@@ -114,21 +121,26 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
     case H2_BTN_ACTION_SINGLE:
       if (side == H2_BTN_SIDE_DOWN) {
         sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 10);
+        send_to_bindings();
+        h2_led_update_light_state(gang, true);
       } else {
         sl_zigbee_af_fill_command_on_off_cluster_off();
+        send_to_bindings();
+        h2_led_update_light_state(gang, false);
       }
-      send_to_bindings();
       break;
 
     case H2_BTN_ACTION_LONG:
       if (side == H2_BTN_SIDE_DOWN) {
         // Transition to max brightness (turns on at minimum if off)
         sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 40);
+        send_to_bindings();
+        h2_led_update_light_state(gang, true);
       } else {
         // Transition to minimum (no on/off to avoid abrupt off at level 0)
         sl_zigbee_af_fill_command_level_control_cluster_move_to_level(0, 40, 0, 0);
+        send_to_bindings();
       }
-      send_to_bindings();
       break;
 
     case H2_BTN_ACTION_RELEASE:
@@ -191,6 +203,35 @@ static void button_tick_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
   h2_button_tick();
+
+  // Detect both buttons held for factory reset
+#if SL_SIMPLE_BUTTON_COUNT > 1
+  bool btn0_pressed = (sl_button_get_state(SL_SIMPLE_BUTTON_INSTANCE(0))
+                       == SL_SIMPLE_BUTTON_PRESSED);
+  bool btn1_pressed = (sl_button_get_state(SL_SIMPLE_BUTTON_INSTANCE(1))
+                       == SL_SIMPLE_BUTTON_PRESSED);
+
+  if (btn0_pressed && btn1_pressed) {
+    factory_reset_timer_ms += BUTTON_TICK_MS;
+    if (!factory_reset_active && factory_reset_timer_ms >= 1000) {
+      factory_reset_active = true;
+      h2_led_set_mode(0, H2_LED_MODE_MANUAL);
+      h2_led_set_manual(0, 0, 100);  // red = warning
+    }
+    if (factory_reset_timer_ms >= FACTORY_RESET_HOLD_MS) {
+      sl_zigbee_af_event_set_active(&factory_reset_event);
+      factory_reset_timer_ms = 0;
+      factory_reset_active = false;
+    }
+  } else {
+    if (factory_reset_active) {
+      factory_reset_active = false;
+      h2_opple_init_leds();
+    }
+    factory_reset_timer_ms = 0;
+  }
+#endif
+
   sl_zigbee_af_event_set_delay_ms(&button_tick_event, BUTTON_TICK_MS);
 }
 
@@ -215,6 +256,21 @@ static void commissioning_event_handler(sl_zigbee_af_event_t *event)
   }
 }
 
+static void factory_reset_event_handler(sl_zigbee_af_event_t *event)
+{
+  (void)event;
+  sl_zigbee_app_debug_println("*** FACTORY RESET ***");
+
+  // Visual feedback: blue flash = reset complete
+  h2_led_set_mode(0, H2_LED_MODE_MANUAL);
+  h2_led_set_manual(0, 100, 100);
+
+  sl_zigbee_clear_binding_table();
+  nvm3_eraseAll(nvm3_defaultHandle);
+  sl_zigbee_leave_network(SL_ZIGBEE_LEAVE_NWK_WITH_NO_OPTION);
+  halReboot();
+}
+
 static void finding_and_binding_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
@@ -224,11 +280,9 @@ static void finding_and_binding_handler(sl_zigbee_af_event_t *event)
 
 //--------------------------------------------------
 // Pre-attribute-change callback
-// Reject On/Off attribute writes caused by self-binding loopback.
-// When decoupled-mode button presses send On/Off commands to bindings,
-// a self-binding (EP1 client -> EP1 server) causes the command to loop
-// back asynchronously. Rejecting the write here prevents the relay from
-// being affected and keeps the attribute in sync with the actual relay state.
+// Rejects self-binding loopback: decoupled button -> binding -> self.
+// Binding-based On/Off from other devices is already consumed by
+// pre_message_received_cb (ep 0xFF check).
 
 sl_zigbee_af_status_t sl_zigbee_af_pre_attribute_change_cb(
     uint8_t endpoint,
@@ -250,7 +304,7 @@ sl_zigbee_af_status_t sl_zigbee_af_pre_attribute_change_cb(
       && attributeId == ZCL_ON_OFF_ATTRIBUTE_ID) {
     const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
     if (cmd != NULL && cmd->source == sl_zigbee_af_get_node_id()) {
-      sl_zigbee_app_debug_println("Rejected self-loopback On/Off write on EP%d", endpoint);
+      sl_zigbee_app_debug_println("Rejected self-loopback On/Off on EP%d", endpoint);
       return SL_ZIGBEE_ZCL_STATUS_FAILURE;
     }
   }
@@ -271,7 +325,6 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
                                             uint8_t size,
                                             uint8_t *value)
 {
-  (void)mask;
   (void)manufacturerCode;
   (void)type;
   (void)size;
@@ -286,13 +339,59 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
   // Find which gang this endpoint belongs to
   for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
     if (gangs[g].endpoint == endpoint) {
-      h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
-      h2_led_update_relay_state(g, on_off_val != 0);
-      h2_opple_save_relay_state(g, on_off_val != 0);
-      sl_zigbee_app_debug_println("Relay %d: %s", g, on_off_val ? "ON" : "OFF");
+      if (mask == CLUSTER_MASK_SERVER) {
+        // Server-side: command from coordinator or local toggle → control relay
+        h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
+        h2_led_update_relay_state(g, on_off_val != 0);
+        h2_opple_save_relay_state(g, on_off_val != 0);
+        sl_zigbee_app_debug_println("Relay %d: %s", g, on_off_val ? "ON" : "OFF");
+      } else {
+        // Client-side: attribute report from bound light → update LED only
+        h2_led_update_light_state(g, on_off_val != 0);
+        sl_zigbee_app_debug_println("Light %d: %s", g, on_off_val ? "ON" : "OFF");
+      }
       break;
     }
   }
+}
+
+//--------------------------------------------------
+// Report Attributes callback
+// Receives On/Off attribute reports from bound lights so the LED
+// can track their actual state (e.g. when controlled by another device).
+
+bool sl_zigbee_af_report_attributes_cb(sl_zigbee_af_cluster_id_t clusterId,
+                                        uint8_t *buffer,
+                                        uint16_t bufLen)
+{
+  if (clusterId != ZCL_ON_OFF_CLUSTER_ID || bufLen < 4) {
+    return false;
+  }
+
+  // Report Attributes payload: attr_id (2B LE) + type (1B) + value (1B)
+  uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
+  if (attr_id != ZCL_ON_OFF_ATTRIBUTE_ID) {
+    return false;
+  }
+
+  uint8_t on_off_val = buffer[3];
+
+  const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
+  if (cmd == NULL) {
+    return false;
+  }
+
+  uint8_t endpoint = cmd->apsFrame->destinationEndpoint;
+  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    if (gangs[g].endpoint == endpoint) {
+      h2_led_update_light_state(g, on_off_val != 0);
+      sl_zigbee_app_debug_println("Light report EP%d: %s", endpoint,
+                                   on_off_val ? "ON" : "OFF");
+      break;
+    }
+  }
+
+  return false;  // let framework continue processing
 }
 
 //--------------------------------------------------
@@ -314,6 +413,7 @@ void sl_zigbee_af_main_init_cb(void)
   sl_zigbee_af_event_init(&led_tick_event, led_tick_handler);
   sl_zigbee_af_event_init(&finding_and_binding_event, finding_and_binding_handler);
   sl_zigbee_af_event_init(&commissioning_event, commissioning_event_handler);
+  sl_zigbee_af_event_init(&factory_reset_event, factory_reset_event_handler);
 
   // Start periodic ticks
   sl_zigbee_af_event_set_delay_ms(&button_tick_event, BUTTON_TICK_MS);
@@ -366,18 +466,41 @@ void sl_zigbee_af_radio_needs_calibrating_cb(void)
 #endif
 
 //--------------------------------------------------
-// Pre-message-received: intercept cluster 0xFCC0 before framework processing
+// Pre-message-received: intercept messages before framework processing
 
 bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
 {
-  if (msg->apsFrame->clusterId != OPPLE_CLUSTER_ID) {
-    return false;
+  // Handle Opple cluster (0xFCC0)
+  if (msg->apsFrame->clusterId == OPPLE_CLUSTER_ID) {
+    return h2_opple_handle_message(msg->apsFrame->destinationEndpoint,
+                                   msg->source,
+                                   msg->message,
+                                   msg->msgLen);
   }
 
-  return h2_opple_handle_message(msg->apsFrame->destinationEndpoint,
-                                 msg->source,
-                                 msg->message,
-                                 msg->msgLen);
+  // In decoupled mode, consume On/Off cluster-specific commands sent to ep 0xFF.
+  // These arrive from binding-based sync (coordinator or bound lights) and must
+  // not toggle the relay. Direct commands to a specific EP (e.g. EP1) pass through.
+  // Reports (global cmd 0x0A) are NOT cluster-specific, so they pass through too.
+  if (msg->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID
+      && msg->apsFrame->destinationEndpoint == 0xFF
+      && msg->msgLen >= 3
+      && (msg->message[0] & 0x03) == 0x01) {  // cluster-specific frame type
+    for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+      if (h2_opple_get_op_mode(g) != OPPLE_OP_MODE_CONTROL_RELAY) {
+        // Update light state from the command for immediate LED feedback
+        uint8_t cmd_id = msg->message[2];
+        if (cmd_id == 0x01) {       // On
+          h2_led_update_light_state(g, true);
+        } else if (cmd_id == 0x00) { // Off
+          h2_led_update_light_state(g, false);
+        }
+        return true;  // consume — don't let framework toggle relay
+      }
+    }
+  }
+
+  return false;
 }
 
 //--------------------------------------------------
