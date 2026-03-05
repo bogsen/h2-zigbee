@@ -16,7 +16,7 @@ Custom firmware for the Aqara H2 wall switch platform (EFR32MG24A410F1536IM48), 
 ## Hardware
 
 - **MCU**: EFR32MG24A410F1536IM48 (Cortex-M33, 1536KB Flash, 256KB RAM)
-- **Relay**: Secondary module controlled via UART (protocol being reverse-engineered)
+- **Relay**: Secondary power module controlled via UART (115200 baud, CRC-16/MODBUS framing)
 - **Buttons**: 2 per gang (up/down), active-low with debounce
 - **LEDs**: 2 per gang (up/down), each dual-color R+B controlled via TIMER PWM
   - Top LED: TIMER0 CC0 (red, PD4) + CC1 (blue, PD5)
@@ -49,16 +49,19 @@ Custom firmware for the Aqara H2 wall switch platform (EFR32MG24A410F1536IM48), 
 ## Button Behavior
 
 ### Coupled Mode (default)
-- **Up press** — Relay ON
-- **Down press** — Relay OFF
+- **Down press** — Relay ON
+- **Up press** — Relay OFF
 - **Long press** — Same + reported to coordinator
+- Works even without network
 
 ### Decoupled Mode
-- **Up press** — Send On to bindings
-- **Down press** — Send Off to bindings
-- **Long press up/down** — Send Level Move up/down to bindings
+- **Down press** — Send On (full brightness) to bindings
+- **Up press** — Send Off to bindings
+- **Long press down** — Send Level Move up to bindings
+- **Long press up** — Send Level Move down to bindings
 - **Release** — Send Level Stop to bindings
 - **Double press** — Report only (automation trigger)
+- External ZCL On/Off writes still control the local relay
 
 ### Commissioning
 - **Long press** (when not joined) — Start network steering
@@ -90,11 +93,11 @@ Each button has an R+B dual-color LED. Color value 0=red, 100=blue.
 - [x] Attribute reporting (On/Off state)
 
 ### In Progress / TODO
-- [ ] UART relay protocol (stub — stores state in RAM, no physical relay yet)
-- [ ] Manufacturer-specific cluster 0xFCC0 (Aqara Opple) attributes
-- [ ] Decoupled mode (code exists, needs 0xFCC0 `operation_mode` attribute to activate)
-- [ ] StartUpOnOff with NVM-backed previous state
-- [ ] Button action/side reporting via 0xFCC0
+- [x] UART relay protocol — CRC-16/MODBUS framing to secondary power module
+- [x] Manufacturer-specific cluster 0xFCC0 (Aqara Opple) — read/write attributes
+- [x] Decoupled mode — buttons send to bindings, relay via coordinator
+- [x] NVM-backed power-on behavior (on/previous/off/inverted)
+- [x] Button action/side reporting via genMultistateInput
 - [ ] Factory reset (long press both buttons 10s)
 - [ ] OTA firmware updates (component included, untested)
 - [ ] LED follow-bound-light mode
@@ -115,6 +118,7 @@ Requires [Simplicity Studio 6](https://www.silabs.com/developer-tools/simplicity
 | `h2_button.c/h` | Button state machine (single/double/long/release detection) |
 | `h2_led.c/h` | LED PWM driver with smooth color transitions |
 | `h2_led_config.h` | LED pin and timer assignments |
-| `h2_relay.c/h` | Relay abstraction (UART stub for now) |
+| `h2_opple.c/h` | Aqara Opple cluster 0xFCC0 — config attributes, NVM storage, LED control |
+| `h2_relay.c/h` | Relay control via UART to secondary power module |
 | `config/zcl/zcl_config.zap` | ZCL cluster/endpoint configuration |
 | `h2_switch_1g.slcp` | Project component and configuration |

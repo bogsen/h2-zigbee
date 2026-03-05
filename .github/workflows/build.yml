@@ -130,6 +130,9 @@ jobs:
           cd bootloader/cmake_gcc
           "${CMAKE}" --build --preset default_config
 
+      - name: Create OTA image
+        run: h2_switch_1g/create_ota.sh
+
       - name: Upload h2_switch_1g artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -138,6 +141,7 @@ jobs:
             h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.hex
             h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.bin
             h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.s37
+            h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.ota
           if-no-files-found: error
 
       - name: Upload bootloader artifacts

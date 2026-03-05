@@ -34,6 +34,7 @@ component:
 - instance: [btn1, btn2]
   id: simple_button
 - {id: sl_main}
+- {id: slot_manager}
 - {id: toolchain_gcc_lto}
 - instance: [wall_uart]
   id: uartdrv_eusart

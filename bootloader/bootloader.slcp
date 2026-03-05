@@ -23,9 +23,11 @@ component:
 - {id: EFR32MG24A410F1536IM48}
 - {id: bootloader_aes_sha_ecdsa}
 - {id: bootloader_common_storage}
+- {id: bootloader_compression_lzma}
 - {id: bootloader_core}
 - {id: bootloader_crc}
 - {id: bootloader_debug}
+- {id: bootloader_gbl_compression_lz4}
 - {id: bootloader_image_parser}
 - {id: bootloader_internal_storage}
 - {id: bootloader_storage_slots}

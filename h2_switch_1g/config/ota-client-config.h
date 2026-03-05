@@ -94,7 +94,7 @@
 // <DISABLE_FEATURE=> Disable Feature
 // <i> Default: MILLISECONDS
 // <i> The units applied to the Minimum Block Period field in an ImageBlockRequest and ImageBlockResponse. Optionally, the feature can be disabled.
-#define SL_ZIGBEE_AF_PLUGIN_OTA_CLIENT_MIN_BLOCK_PERIOD_UNITS   MILLISECONDS
+#define SL_ZIGBEE_AF_PLUGIN_OTA_CLIENT_MIN_BLOCK_PERIOD_UNITS   DISABLE_FEATURE
 
 // <q SL_ZIGBEE_AF_PLUGIN_OTA_CLIENT_IGNORE_LOOPBACK_SERVER> Ignore loopback server endpoints
 // <i> Default: TRUE

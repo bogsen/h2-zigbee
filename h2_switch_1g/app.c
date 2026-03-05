@@ -13,6 +13,8 @@
 #include "sl_simple_button_instances.h"
 #endif
 
+#include "btl_interface.h"
+#include "slot-manager.h"
 #include "h2_relay.h"
 #include "h2_button.h"
 #include "h2_led.h"
@@ -21,6 +23,9 @@
 #ifndef H2_SWITCH_GANG_COUNT
 #define H2_SWITCH_GANG_COUNT 1
 #endif
+
+#define H2_FIRMWARE_VERSION  0x0000001d  // increment for each OTA release
+#define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define SWITCH_ENDPOINT           1
 #define BUTTON_TICK_MS            10
@@ -144,6 +149,11 @@ static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_acti
 {
   sl_zigbee_app_debug_println("Button: gang=%d side=%d action=%d", gang, side, action);
 
+  // Coupled mode works even without network
+  if (h2_opple_get_op_mode(gang) == OPPLE_OP_MODE_CONTROL_RELAY) {
+    handle_coupled(gang, side, action);
+  }
+
   if (sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
     if (action == H2_BTN_ACTION_LONG) {
       sl_zigbee_af_event_set_active(&commissioning_event);
@@ -165,10 +175,8 @@ static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_acti
   uint8_t report_ep = gangs[gang].endpoint
                       + ((side == H2_BTN_SIDE_DOWN) ? 3 : 0);
 
-  // Dispatch based on operation mode
-  if (h2_opple_get_op_mode(gang) == OPPLE_OP_MODE_CONTROL_RELAY) {
-    handle_coupled(gang, side, action);
-  } else {
+  // Decoupled mode: send ZCL commands to bindings (no local relay control)
+  if (h2_opple_get_op_mode(gang) != OPPLE_OP_MODE_CONTROL_RELAY) {
     handle_decoupled(gang, side, action);
   }
 
@@ -215,6 +223,42 @@ static void finding_and_binding_handler(sl_zigbee_af_event_t *event)
 }
 
 //--------------------------------------------------
+// Pre-attribute-change callback
+// Reject On/Off attribute writes caused by self-binding loopback.
+// When decoupled-mode button presses send On/Off commands to bindings,
+// a self-binding (EP1 client -> EP1 server) causes the command to loop
+// back asynchronously. Rejecting the write here prevents the relay from
+// being affected and keeps the attribute in sync with the actual relay state.
+
+sl_zigbee_af_status_t sl_zigbee_af_pre_attribute_change_cb(
+    uint8_t endpoint,
+    sl_zigbee_af_cluster_id_t clusterId,
+    sl_zigbee_af_attribute_id_t attributeId,
+    uint8_t mask,
+    uint16_t manufacturerCode,
+    uint8_t type,
+    uint8_t size,
+    uint8_t *value)
+{
+  (void)mask;
+  (void)manufacturerCode;
+  (void)type;
+  (void)size;
+  (void)value;
+
+  if (clusterId == ZCL_ON_OFF_CLUSTER_ID
+      && attributeId == ZCL_ON_OFF_ATTRIBUTE_ID) {
+    const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
+    if (cmd != NULL && cmd->source == sl_zigbee_af_get_node_id()) {
+      sl_zigbee_app_debug_println("Rejected self-loopback On/Off write on EP%d", endpoint);
+      return SL_ZIGBEE_ZCL_STATUS_FAILURE;
+    }
+  }
+
+  return SL_ZIGBEE_ZCL_STATUS_SUCCESS;
+}
+
+//--------------------------------------------------
 // Post-attribute-change callback
 // Called after ANY attribute value changes (including from On/Off server plugin)
 
@@ -256,6 +300,9 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
 
 void sl_zigbee_af_main_init_cb(void)
 {
+  // Erase storage slot 0 so stale OTA images don't get re-applied on boot
+  bootloader_eraseStorageSlot(0);
+
   // Initialize hardware modules
   h2_relay_init();
   h2_button_init(on_button_action);
@@ -365,3 +412,31 @@ void sl_button_on_change(const sl_button_t *handle)
 #endif
 }
 #endif // SL_CATALOG_SIMPLE_BUTTON_PRESENT
+
+//--------------------------------------------------
+// OTA client: bootload callback
+// The ota-client-policy component is not used; override the WEAK default
+// to use the slot manager API for bootloading.
+
+void sl_zigbee_af_ota_client_bootload_cb(const sl_zigbee_af_ota_image_id_t *id)
+{
+  (void)id;
+  sl_util_af_slot_manager_boot_slot(0);
+}
+
+//--------------------------------------------------
+// OTA client: report firmware identity to the OTA server
+
+void sl_zigbee_af_ota_client_version_info_cb(sl_zigbee_af_ota_image_id_t *currentImageInfo,
+                                              uint16_t *hardwareVersion)
+{
+  if (currentImageInfo != NULL) {
+    memset(currentImageInfo, 0, sizeof(sl_zigbee_af_ota_image_id_t));
+    currentImageInfo->manufacturerId  = 0x115F;  // Aqara/Lumi
+    currentImageInfo->imageTypeId     = H2_IMAGE_TYPE_ID;
+    currentImageInfo->firmwareVersion = H2_FIRMWARE_VERSION;
+  }
+  if (hardwareVersion != NULL) {
+    *hardwareVersion = 0xFFFF;  // SL_ZIGBEE_AF_INVALID_HARDWARE_VERSION
+  }
+}

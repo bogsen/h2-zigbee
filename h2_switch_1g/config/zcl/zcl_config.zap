@@ -25,7 +25,7 @@
     },
     {
       "key": "manufacturerCodes",
-      "value": "0x1002"
+      "value": "0x115F"
     }
   ],
   "package": [
