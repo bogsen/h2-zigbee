@@ -21,7 +21,7 @@
 // <q SL_ZIGBEE_AF_PLUGIN_OTA_CLIENT_AUTO_START> Auto Start on Stack Up (random delay)
 // <i> Default: TRUE
 // <i> Automatically start the OTA client on SL_STATUS_NETWORK_UP.  This will include a random delay up to 5 minutes to prevent an issue where multiple devices in the network all query the server simultaneously after a power-outage.
-#define SL_ZIGBEE_AF_PLUGIN_OTA_CLIENT_AUTO_START   1
+#define SL_ZIGBEE_AF_PLUGIN_OTA_CLIENT_AUTO_START   0
 
 // <o SL_ZIGBEE_AF_PLUGIN_OTA_CLIENT_QUERY_DELAY_MINUTES> Query OTA Server Delay (minutes) <1-65535>
 // <i> Default: 5

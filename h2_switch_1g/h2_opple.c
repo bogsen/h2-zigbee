@@ -462,8 +462,9 @@ void h2_opple_report_action(uint8_t endpoint, uint8_t action_value)
     .clusterId           = 0x0012, // genMultistateInput
     .sourceEndpoint      = endpoint,
     .destinationEndpoint = 1,
-    .options             = SL_ZIGBEE_AF_DEFAULT_APS_OPTIONS
-                         | SL_ZIGBEE_APS_OPTION_ENCRYPTION,
+    .options             = (SL_ZIGBEE_AF_DEFAULT_APS_OPTIONS
+                         | SL_ZIGBEE_APS_OPTION_ENCRYPTION)
+                         & ~SL_ZIGBEE_APS_OPTION_RETRY,
   };
 
   sl_zigbee_af_send_unicast(SL_ZIGBEE_OUTGOING_DIRECT,

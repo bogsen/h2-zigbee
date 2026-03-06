@@ -54,15 +54,21 @@ Custom firmware for the Aqara H2 wall switch platform (EFR32MG24A410F1536IM48), 
 - **Long press** — Same + reported to coordinator
 - Works even without network
 
-### Decoupled Mode
-- **Down press** — Send On (full brightness) to bindings
-- **Up press** — Send Off to bindings
-- **Long press down** — Send Level Move up to bindings
-- **Long press up** — Send Level Move down to bindings
-- **Release** — Send Level Stop to bindings
-- **Double press** — Report only (automation trigger)
+### Decoupled Mode (Low-Latency Dimming)
+
+Light dimming starts immediately on button press (~10ms latency), before the press type is classified.
+
+| Event | Down (brighten) | Up (dim) |
+|-------|----------------|----------|
+| **Press** (immediate) | Move up slowly + turn on | Move down slowly |
+| **Quick tap** (<300ms) | Jump to max brightness | Jump to off |
+| **Long hold** (>300ms) | No-op (slow move continues) | No-op (slow move continues) |
+| **Release** (from hold) | Stop at current level | Stop at current level |
+| **Double press** | Stop (cancel) | Stop (cancel) |
+
 - Direct ZCL On/Off commands (to EP1) still control the local relay
 - LED follows bound light state (On/Off reports + optimistic updates)
+- LED syncs to bound light state on boot via Read Attributes
 
 ### Commissioning
 - **Long press** (when not joined) — Start network steering

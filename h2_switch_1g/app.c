@@ -25,7 +25,7 @@
 #define H2_SWITCH_GANG_COUNT 1
 #endif
 
-#define H2_FIRMWARE_VERSION  0x00000024  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000047  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define SWITCH_ENDPOINT           1
@@ -59,6 +59,7 @@ static sl_zigbee_af_event_t led_tick_event;
 static sl_zigbee_af_event_t finding_and_binding_event;
 static sl_zigbee_af_event_t commissioning_event;
 static sl_zigbee_af_event_t factory_reset_event;
+static sl_zigbee_af_event_t light_sync_event;
 
 //--------------------------------------------------
 // Forward declarations
@@ -67,6 +68,7 @@ static void led_tick_handler(sl_zigbee_af_event_t *event);
 static void finding_and_binding_handler(sl_zigbee_af_event_t *event);
 static void commissioning_event_handler(sl_zigbee_af_event_t *event);
 static void factory_reset_event_handler(sl_zigbee_af_event_t *event);
+static void light_sync_handler(sl_zigbee_af_event_t *event);
 static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_action_t action);
 
 //--------------------------------------------------
@@ -106,50 +108,78 @@ static void handle_coupled(uint8_t gang, h2_button_side_t side, h2_button_action
 //--------------------------------------------------
 // Decoupled mode: button sends ZCL commands to bindings
 
+// Declared in framework util/common.c
+extern uint8_t appResponseData[];
+
+#define MOVE_RATE_SLOW  60   // units/sec for hold-to-dim
+#define MOVE_RATE_FAST  254  // units/sec for quick tap toggle
+
 static void send_to_bindings(void)
 {
-  sl_zigbee_af_send_command_unicast_to_bindings();
+  // Disable default response to prevent response storm from every recipient
+  appResponseData[0] |= ZCL_DISABLE_DEFAULT_RESPONSE_MASK;
+
+  // Disable APS retry so failed deliveries don't block the TX queue
+  sl_zigbee_af_get_command_aps_frame()->options &= ~SL_ZIGBEE_APS_OPTION_RETRY;
+
   sl_zigbee_af_send_command_multicast_to_bindings();
+  sl_zigbee_af_send_command_unicast_to_bindings();
+}
+
+// Helper: fill command, set source endpoint, send
+static void send_cmd(uint8_t ep)
+{
+  sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = ep;
+  send_to_bindings();
 }
 
 static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
 {
   uint8_t ep = gangs[gang].endpoint;
-  sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = ep;
 
   switch (action) {
-    case H2_BTN_ACTION_SINGLE:
+    case H2_BTN_ACTION_PRESS:
+      // Immediate move on press — near-zero latency dimming
       if (side == H2_BTN_SIDE_DOWN) {
-        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 10);
-        send_to_bindings();
+        // move_with_on_off so light turns on if off
+        sl_zigbee_af_fill_command_level_control_cluster_move_with_on_off(0, MOVE_RATE_SLOW);
+        send_cmd(ep);
         h2_led_update_light_state(gang, true);
       } else {
-        sl_zigbee_af_fill_command_on_off_cluster_off();
-        send_to_bindings();
+        // move (without on_off) so light doesn't turn off at level 0 during dim
+        sl_zigbee_af_fill_command_level_control_cluster_move(1, MOVE_RATE_SLOW, 0, 0);
+        send_cmd(ep);
+      }
+      break;
+
+    case H2_BTN_ACTION_SINGLE:
+      // Quick tap: jump to target level. Implicitly stops any running move.
+      // Single command instead of stop + move = less radio congestion.
+      if (side == H2_BTN_SIDE_DOWN) {
+        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 10);
+        send_cmd(ep);
+        h2_led_update_light_state(gang, true);
+      } else {
+        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(0, 10);
+        send_cmd(ep);
         h2_led_update_light_state(gang, false);
       }
       break;
 
     case H2_BTN_ACTION_LONG:
-      if (side == H2_BTN_SIDE_DOWN) {
-        // Transition to max brightness (turns on at minimum if off)
-        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 40);
-        send_to_bindings();
-        h2_led_update_light_state(gang, true);
-      } else {
-        // Transition to minimum (no on/off to avoid abrupt off at level 0)
-        sl_zigbee_af_fill_command_level_control_cluster_move_to_level(0, 40, 0, 0);
-        send_to_bindings();
-      }
+      // No-op: slow move from PRESS is already running
       break;
 
     case H2_BTN_ACTION_RELEASE:
+      // Freeze light at current level
       sl_zigbee_af_fill_command_level_control_cluster_stop_with_on_off();
-      send_to_bindings();
+      send_cmd(ep);
       break;
 
     case H2_BTN_ACTION_DOUBLE:
-      // Double press: report-only (coordinator automation trigger), no ZCL command
+      // Cancel any running move
+      sl_zigbee_af_fill_command_level_control_cluster_stop_with_on_off();
+      send_cmd(ep);
       break;
   }
 }
@@ -160,6 +190,16 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
 static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
 {
   sl_zigbee_app_debug_println("Button: gang=%d side=%d action=%d", gang, side, action);
+
+  // PRESS: only used for low-latency decoupled dimming.
+  // Skip coupled mode, commissioning, and reporting (action_map[] has no entry for it).
+  if (action == H2_BTN_ACTION_PRESS) {
+    if (sl_zigbee_af_network_state() == SL_ZIGBEE_JOINED_NETWORK
+        && h2_opple_get_op_mode(gang) != OPPLE_OP_MODE_CONTROL_RELAY) {
+      handle_decoupled(gang, side, action);
+    }
+    return;
+  }
 
   // Coupled mode works even without network
   if (h2_opple_get_op_mode(gang) == OPPLE_OP_MODE_CONTROL_RELAY) {
@@ -395,6 +435,66 @@ bool sl_zigbee_af_report_attributes_cb(sl_zigbee_af_cluster_id_t clusterId,
 }
 
 //--------------------------------------------------
+// Read Attributes Response callback
+// Handles responses to our boot-time light state query.
+
+bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterId,
+                                               uint8_t *buffer,
+                                               uint16_t bufLen)
+{
+  if (clusterId != ZCL_ON_OFF_CLUSTER_ID || bufLen < 5) {
+    return false;
+  }
+
+  // Read Attributes Response: attr_id (2B LE) + status (1B) + type (1B) + value (1B)
+  uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
+  if (attr_id != ZCL_ON_OFF_ATTRIBUTE_ID || buffer[2] != 0) {
+    return false;  // wrong attribute or read failed
+  }
+
+  uint8_t on_off_val = buffer[4];
+
+  const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
+  if (cmd == NULL) {
+    return false;
+  }
+
+  uint8_t endpoint = cmd->apsFrame->destinationEndpoint;
+  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    if (gangs[g].endpoint == endpoint) {
+      h2_led_update_light_state(g, on_off_val != 0);
+      sl_zigbee_app_debug_println("Light sync EP%d: %s", endpoint,
+                                   on_off_val ? "ON" : "OFF");
+      break;
+    }
+  }
+
+  return false;
+}
+
+//--------------------------------------------------
+// Light state sync: read On/Off from bound lights on boot
+
+static void light_sync_handler(sl_zigbee_af_event_t *event)
+{
+  (void)event;
+  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    if (h2_opple_get_op_mode(g) != OPPLE_OP_MODE_CONTROL_RELAY) {
+      uint8_t ep = gangs[g].endpoint;
+      uint8_t attr_ids[] = {
+        LOW_BYTE(ZCL_ON_OFF_ATTRIBUTE_ID),
+        HIGH_BYTE(ZCL_ON_OFF_ATTRIBUTE_ID)
+      };
+      sl_zigbee_af_fill_command_global_client_to_server_read_attributes(
+          ZCL_ON_OFF_CLUSTER_ID, attr_ids, sizeof(attr_ids));
+      sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = ep;
+      sl_zigbee_af_send_command_multicast_to_bindings();
+      sl_zigbee_af_send_command_unicast_to_bindings();
+    }
+  }
+}
+
+//--------------------------------------------------
 // Zigbee framework callbacks
 
 void sl_zigbee_af_main_init_cb(void)
@@ -414,6 +514,12 @@ void sl_zigbee_af_main_init_cb(void)
   sl_zigbee_af_event_init(&finding_and_binding_event, finding_and_binding_handler);
   sl_zigbee_af_event_init(&commissioning_event, commissioning_event_handler);
   sl_zigbee_af_event_init(&factory_reset_event, factory_reset_event_handler);
+  sl_zigbee_af_event_init(&light_sync_event, light_sync_handler);
+
+  // Reduce APS ACK timeout from default 1600ms to 500ms.
+  // Default assumes 30 hops; a home network is 1-2 hops.
+  // Long timeouts block TX queue slots during retries.
+  sl_zigbee_set_aps_ack_timeout_ms(500);
 
   // Start periodic ticks
   sl_zigbee_af_event_set_delay_ms(&button_tick_event, BUTTON_TICK_MS);
@@ -428,6 +534,10 @@ void sl_zigbee_af_stack_status_cb(sl_status_t status)
       h2_opple_apply_power_on_behavior(g);
       sync_relay_to_cluster(g);
     }
+    // Start OTA client immediately (no random delay)
+    sl_zigbee_af_ota_client_start_cb();
+    // Sync LED to bound light state after network settles
+    sl_zigbee_af_event_set_delay_ms(&light_sync_event, 2000);
   } else if (status == SL_STATUS_NETWORK_DOWN) {
     sl_zigbee_app_debug_println("Network DOWN");
   }

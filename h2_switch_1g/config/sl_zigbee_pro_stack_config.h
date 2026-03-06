@@ -93,7 +93,7 @@
 // <o SL_ZIGBEE_BROADCAST_TABLE_SIZE> Broadcast Table Size <15-254>
 // <i> Default: 15
 // <i> The size of the broadcast table.
-#define SL_ZIGBEE_BROADCAST_TABLE_SIZE   15
+#define SL_ZIGBEE_BROADCAST_TABLE_SIZE   254
 
 // <o SL_ZIGBEE_NEIGHBOR_TABLE_SIZE> Neighbor Table Size
 // <i> Neighbor Table Size

@@ -6,7 +6,7 @@
 
 #define NUM_BUTTONS (H2_SWITCH_GANG_COUNT * 2) // up + down per gang
 
-#define DEFAULT_LONG_PRESS_MS   500
+#define DEFAULT_LONG_PRESS_MS   300
 #define DEFAULT_DOUBLE_PRESS_MS 300
 #define TICK_INTERVAL_MS        10
 
@@ -83,6 +83,7 @@ void h2_button_tick(void)
     switch (b->state) {
       case BTN_STATE_IDLE:
         if (press) {
+          emit(i, H2_BTN_ACTION_PRESS);
           b->state = BTN_STATE_PRESSED;
           b->timer_ms = long_press_ms;
         }
@@ -94,7 +95,9 @@ void h2_button_tick(void)
           emit(i, H2_BTN_ACTION_LONG);
           b->state = BTN_STATE_LONG_HOLD;
         } else if (release) {
-          // Released before long press threshold
+          // Emit SINGLE immediately on release (controls lights right away),
+          // then wait for possible second press to also emit DOUBLE.
+          emit(i, H2_BTN_ACTION_SINGLE);
           b->state = BTN_STATE_WAIT_FOR_DOUBLE;
           b->timer_ms = double_press_ms;
         } else {
@@ -106,8 +109,7 @@ void h2_button_tick(void)
         if (press) {
           b->state = BTN_STATE_SECOND_PRESSED;
         } else if (b->timer_ms <= TICK_INTERVAL_MS) {
-          // Double press window expired — it's a single press
-          emit(i, H2_BTN_ACTION_SINGLE);
+          // Double press window expired — nothing more to do
           b->state = BTN_STATE_IDLE;
         } else {
           b->timer_ms -= TICK_INTERVAL_MS;

@@ -10,6 +10,7 @@ typedef enum {
   H2_BTN_ACTION_SINGLE  = 1,
   H2_BTN_ACTION_DOUBLE  = 2,
   H2_BTN_ACTION_LONG    = 3,
+  H2_BTN_ACTION_PRESS   = 4,  // fires immediately on press (within one tick)
 } h2_button_action_t;
 
 // Which button of a pair
