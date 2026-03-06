@@ -1,11 +1,13 @@
 {
     "folders": [
         {
-            "path": "../h2-zigbee/h2_switch_1g"
+            "path": "h2_switch_1g"
         },
         {
-            "path": "../h2-zigbee/bootloader"
+            "path": "bootloader"
+        },
+        {
+            "path": "swd_flasher"
         }
-    ],
-    "siWorkspaceRoot": "/Users/bogdan/Projects/aqara/h2-zigbee"
+    ]
 }

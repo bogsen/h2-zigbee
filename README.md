@@ -89,9 +89,9 @@ Each button has an R+B dual-color LED. Color value 0=red, 100=blue.
 ### Working
 - [x] Zigbee 3.0 router (joins network, routes traffic)
 - [x] On/Off cluster server — toggle from Z2M/ZHA
-- [x] Button state machine — single/double/long press detection
+- [x] Button state machine — press/single/double/long detection with immediate press event
 - [x] Coupled mode — buttons control relay + sync to On/Off cluster
-- [x] Decoupled mode — buttons send On/Off/Level to bindings
+- [x] Decoupled mode — low-latency dimming via Move/Stop/MoveToLevel to bindings
 - [x] LED PWM driver — dual-color R+B with smooth transitions
 - [x] LED follow-relay mode — color changes on On/Off state
 - [x] Network steering — long press to join
@@ -106,8 +106,9 @@ Each button has an R+B dual-color LED. Color value 0=red, 100=blue.
 - [x] NVM-backed power-on behavior (on/previous/off/inverted)
 - [x] Button action/side reporting via genMultistateInput
 - [x] Factory reset (long press both buttons 10s)
-- [x] OTA firmware updates (LZMA-compressed, ~15 min as router)
+- [x] OTA firmware updates (LZMA-compressed, ~15 min as router, instant start on boot)
 - [x] LED follow-bound-light mode (decoupled: auto, coupled: follow relay)
+- [x] LED sync to bound light state on boot (Read Attributes)
 - [ ] LED time gradient mode
 - [ ] 2-gang support (add EP2)
 - [ ] No-neutral mode (maintain minimum current for MCU power)
@@ -119,14 +120,27 @@ Each button has an R+B dual-color LED. Color value 0=red, 100=blue.
 
 Requires [Simplicity Studio 6](https://www.silabs.com/developer-tools/simplicity-studio) with Simplicity SDK 2025.6.2.
 
-<!-- TODO: Add detailed build/flash instructions (project import, bootloader flashing, first-time setup, subsequent updates, NVM mass erase) -->
+### Initial flashing via SWD
+
+For first-time programming (or to recover a locked device), use the [SWD flash tool](swd_flasher/) with any SWD probe (Pico with debugprobe, J-Link, ST-Link, etc.). This performs a DCI device erase to clear the debug lock, then programs the bootloader + application via the exposed 5-pin header on the back of the board.
+
+**Warning:** The DCI device erase permanently wipes the stock Aqara firmware. There is no way to recover it — the device will only run this custom firmware going forward.
+
+```bash
+cd swd_flasher
+./flash.sh
+```
+
+### Subsequent updates via OTA
+
+Once the firmware is running, updates can be pushed over-the-air via Zigbee OTA (LZMA-compressed, ~15 min as router). See `create_ota.sh` for building OTA images.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `app.c` | Main application — button dispatch, relay sync, LED mode, commissioning |
-| `h2_button.c/h` | Button state machine (single/double/long/release detection) |
+| `h2_button.c/h` | Button state machine (press/single/double/long/release detection) |
 | `h2_led.c/h` | LED PWM driver with smooth color transitions |
 | `h2_led_config.h` | LED pin and timer assignments |
 | `h2_opple.c/h` | Aqara Opple cluster 0xFCC0 — config attributes, NVM storage, LED control |
