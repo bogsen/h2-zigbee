@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "h2_variant.h"
 
 typedef enum {
   H2_RELAY_OFF = 0,
@@ -40,5 +41,13 @@ void h2_relay_send_init(void);
 
 // Send measurement query for a gang (0-indexed)
 void h2_relay_send_measurement_query(uint8_t gang);
+
+#if H2_HAS_DIMMER
+// Set dimmer brightness level (1-254) for a gang — applies gamma curve and sends via UART
+void h2_relay_set_level(uint8_t gang, uint8_t level);
+
+// Get current dimmer brightness level (1-254) for a gang
+uint8_t h2_relay_get_level(uint8_t gang);
+#endif
 
 #endif // H2_RELAY_H

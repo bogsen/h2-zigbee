@@ -1,0 +1,120 @@
+<?xml version="1.0"?>
+<configurator>
+  <domain name="Aqara"/>
+
+  <cluster manufacturerCode="0x115F">
+    <name>Aqara Opple</name>
+    <domain>Aqara</domain>
+    <description>Manufacturer-specific cluster for Aqara device configuration</description>
+    <code>0xFCC0</code>
+    <define>AQARA_OPPLE_CLUSTER</define>
+    <client init="false" tick="false">true</client>
+    <server init="false" tick="false">true</server>
+
+    <globalAttribute side="either" code="0xFFFD" value="1"/>
+
+    <!-- Mode: 0=command, 1=event (Z2M sets to 1 during configure) -->
+    <attribute side="server" code="0x0009" define="OPPLE_MODE"
+               type="INT8U" writable="true" default="0x01" optional="false">
+      mode
+    </attribute>
+
+    <!-- Switch type: 1=toggle, 2=momentary, 3=none -->
+    <attribute side="server" code="0x000A" define="OPPLE_SWITCH_TYPE"
+               type="INT8U" writable="true" default="0x02" optional="false">
+      switch type
+    </attribute>
+
+    <!-- Flip indicator light: 0=normal, 1=flipped -->
+    <attribute side="server" code="0x00F0" define="OPPLE_FLIP_INDICATOR"
+               type="INT8U" writable="true" default="0x00" optional="false">
+      flip indicator light
+    </attribute>
+
+    <!-- Operation mode: 0=decoupled, 1=control_relay -->
+    <attribute side="server" code="0x0200" define="OPPLE_OPERATION_MODE"
+               type="INT8U" writable="true" default="0x01" optional="false">
+      operation mode
+    </attribute>
+
+    <!-- LED indicator: 0=OFF, 1=ON -->
+    <attribute side="server" code="0x0203" define="OPPLE_LED_INDICATOR"
+               type="BOOLEAN" writable="true" default="0x01" optional="false">
+      led indicator
+    </attribute>
+
+    <!-- Knob rotation reporting attributes -->
+    <attribute side="server" code="0x022E" define="OPPLE_ROTATION_ANGLE"
+               type="INT16S" writable="false" default="0x0000" optional="true">
+      rotation angle
+    </attribute>
+
+    <attribute side="server" code="0x0230" define="OPPLE_ROTATION_ANGLE_SPEED"
+               type="INT16U" writable="false" default="0x0000" optional="true">
+      rotation angle speed
+    </attribute>
+
+    <attribute side="server" code="0x0231" define="OPPLE_ROTATION_TIME"
+               type="INT16U" writable="false" default="0x0000" optional="true">
+      rotation time
+    </attribute>
+
+    <attribute side="server" code="0x0232" define="OPPLE_ROTATION_PERCENT_SPEED"
+               type="INT16U" writable="false" default="0x0000" optional="true">
+      rotation percent speed
+    </attribute>
+
+    <attribute side="server" code="0x0233" define="OPPLE_ROTATION_PERCENT"
+               type="INT16S" writable="false" default="0x0000" optional="true">
+      rotation percent
+    </attribute>
+
+    <!-- Rotation sensitivity: 720=low, 360=medium, 180=high -->
+    <attribute side="server" code="0x0234" define="OPPLE_SENSITIVITY"
+               type="INT16U" writable="true" default="0x0168" optional="false">
+      sensitivity
+    </attribute>
+
+    <!-- Rotation action + button state -->
+    <attribute side="server" code="0x023A" define="OPPLE_ROTATION_ACTION"
+               type="INT8U" writable="false" default="0x00" optional="true">
+      rotation action
+    </attribute>
+
+    <!-- Lock relay / LED color: 0=blue, 1=red -->
+    <attribute side="server" code="0x0285" define="OPPLE_LOCK_RELAY"
+               type="INT8U" writable="true" default="0x00" optional="false">
+      lock relay
+    </attribute>
+
+    <!-- Multi-click mode: 1=disabled, 2=enabled -->
+    <attribute side="server" code="0x0286" define="OPPLE_MULTI_CLICK"
+               type="INT8U" writable="true" default="0x01" optional="false">
+      multi click mode
+    </attribute>
+
+    <!-- Dimming phase: 0=forward, 1=reverse -->
+    <attribute side="server" code="0x030A" define="OPPLE_PHASE"
+               type="INT8U" writable="true" default="0x00" optional="false">
+      phase
+    </attribute>
+
+    <!-- Min brightness: 0-99% -->
+    <attribute side="server" code="0x0515" define="OPPLE_MIN_BRIGHTNESS"
+               type="INT8U" writable="true" default="0x00" optional="false">
+      min brightness
+    </attribute>
+
+    <!-- Max brightness: 1-100% -->
+    <attribute side="server" code="0x0516" define="OPPLE_MAX_BRIGHTNESS"
+               type="INT8U" writable="true" default="0x64" optional="false">
+      max brightness
+    </attribute>
+
+    <!-- Power-on behavior: 0=on, 1=previous, 2=off, 3=inverted -->
+    <attribute side="server" code="0x0517" define="OPPLE_POWER_ON_BEHAVIOR"
+               type="INT8U" writable="true" default="0x01" optional="false">
+      power on behavior
+    </attribute>
+  </cluster>
+</configurator>

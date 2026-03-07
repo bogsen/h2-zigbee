@@ -4,6 +4,7 @@
 #include "h2_power.h"
 #include "h2_relay.h"
 #include "h2_opple.h"
+#include "h2_variant.h"
 
 #include <string.h>
 #include <math.h>
@@ -128,8 +129,13 @@ static void report_measurements(float power_w)
 
   // energy (0x0095 / 149): kWh as float
   append_attr_float(OPPLE_ATTR_ENERGY, energy_kwh);
+#if H2_HAS_DIMMER
+  // voltage (0x0096 / 150): KD-R01D Z2M does value * 0.01, so send volts * 100
+  append_attr_float(OPPLE_ATTR_VOLTAGE, voltage_raw * 100.0f);
+#else
   // voltage (0x0096 / 150): Z2M does value * 0.1, so send volts * 10
   append_attr_float(OPPLE_ATTR_VOLTAGE, voltage_raw * 10.0f);
+#endif
   // current (0x0097 / 151): Z2M does value * 0.001, so send amps * 1000
   append_attr_float(OPPLE_ATTR_CURRENT, current_raw * 1000.0f);
   // power (0x0098 / 152): watts as-is

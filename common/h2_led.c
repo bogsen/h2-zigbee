@@ -170,7 +170,9 @@ static void set_target_one(led_pwm_t *led, uint8_t color, uint8_t brightness)
 static void set_target(gang_led_t *g, uint8_t color, uint8_t brightness)
 {
   set_target_one(&g->led_up, color, brightness);
+#if H2_LED_HAS_DN
   set_target_one(&g->led_dn, color, brightness);
+#endif
 }
 
 static void update_targets(uint8_t gang)
@@ -184,6 +186,7 @@ static void update_targets(uint8_t gang)
 
   switch (g->mode) {
     case H2_LED_MODE_FOLLOW_RELAY: {
+#if H2_LED_HAS_DN
       led_pwm_t *on_led  = g->inverted ? &g->led_dn : &g->led_up;
       led_pwm_t *off_led = g->inverted ? &g->led_up : &g->led_dn;
       if (g->relay_on) {
@@ -193,10 +196,18 @@ static void update_targets(uint8_t gang)
         set_target_one(on_led, 0, 0);
         set_target_one(off_led, g->off_color, g->brightness);
       }
+#else
+      if (g->relay_on) {
+        set_target_one(&g->led_up, g->on_color, g->brightness);
+      } else {
+        set_target_one(&g->led_up, g->off_color, g->brightness);
+      }
+#endif
       break;
     }
 
     case H2_LED_MODE_FOLLOW_LIGHT: {
+#if H2_LED_HAS_DN
       led_pwm_t *on_led  = g->inverted ? &g->led_dn : &g->led_up;
       led_pwm_t *off_led = g->inverted ? &g->led_up : &g->led_dn;
       if (g->light_on) {
@@ -206,6 +217,13 @@ static void update_targets(uint8_t gang)
         set_target_one(on_led, 0, 0);
         set_target_one(off_led, g->off_color, g->brightness);
       }
+#else
+      if (g->light_on) {
+        set_target_one(&g->led_up, g->on_color, g->brightness);
+      } else {
+        set_target_one(&g->led_up, g->off_color, g->brightness);
+      }
+#endif
       break;
     }
 
@@ -261,7 +279,9 @@ void h2_led_init(void)
 {
   // Enable clocks
   CMU_ClockEnable(cmuClock_TIMER0, true);
+#if H2_LED_HAS_DN
   CMU_ClockEnable(cmuClock_TIMER1, true);
+#endif
   CMU_ClockEnable(cmuClock_GPIO, true);
 
   // Initialize gang 0 LED state
@@ -273,22 +293,25 @@ void h2_led_init(void)
     .cc_red = H2_LED_UP_R_CC,
     .cc_blue = H2_LED_UP_B_CC,
   };
-  gangs[0].led_dn = (led_pwm_t){
-    .timer_red = H2_LED_DN_TIMER,
-    .timer_blue = H2_LED_DN_TIMER,
-    .cc_red = H2_LED_DN_R_CC,
-    .cc_blue = H2_LED_DN_B_CC,
-  };
 
   // Initialize timer hardware for gang 0
   init_timer(H2_LED_UP_TIMER, H2_LED_UP_TIMER_INDEX,
              H2_LED_UP_R_CC, H2_LED_UP_R_PORT, H2_LED_UP_R_PIN,
              H2_LED_UP_B_CC, H2_LED_UP_B_PORT, H2_LED_UP_B_PIN);
 
+#if H2_LED_HAS_DN
+  gangs[0].led_dn = (led_pwm_t){
+    .timer_red = H2_LED_DN_TIMER,
+    .timer_blue = H2_LED_DN_TIMER,
+    .cc_red = H2_LED_DN_R_CC,
+    .cc_blue = H2_LED_DN_B_CC,
+  };
   init_timer(H2_LED_DN_TIMER, H2_LED_DN_TIMER_INDEX,
              H2_LED_DN_R_CC, H2_LED_DN_R_PORT, H2_LED_DN_R_PIN,
              H2_LED_DN_B_CC, H2_LED_DN_B_PORT, H2_LED_DN_B_PIN);
+#endif
 
+#if H2_SWITCH_GANG_COUNT >= 2
   if (h2_active_gang_count >= 2) {
     CMU_ClockEnable(cmuClock_TIMER3, true);
 
@@ -335,6 +358,7 @@ void h2_led_init(void)
       .cc_blue = H2_LED_DN_B_CC,
     };
   }
+#endif
 
   // Set initial targets
   for (uint8_t i = 0; i < h2_active_gang_count; i++) {
@@ -342,8 +366,10 @@ void h2_led_init(void)
   }
 
   // Debug: verify timers are running after init
-  sl_zigbee_app_debug_println("LED init: T0 STATUS=0x%X T1 STATUS=0x%X",
-    TIMER0->STATUS, TIMER1->STATUS);
+  sl_zigbee_app_debug_println("LED init: T0 STATUS=0x%X", TIMER0->STATUS);
+#if H2_LED_HAS_DN
+  sl_zigbee_app_debug_println("LED init: T1 STATUS=0x%X", TIMER1->STATUS);
+#endif
   if (h2_active_gang_count >= 2) {
     sl_zigbee_app_debug_println("LED init: T3 STATUS=0x%X", TIMER3->STATUS);
   }
@@ -403,7 +429,12 @@ void h2_led_set_one(uint8_t gang, h2_led_position_t pos, uint8_t color, uint8_t 
   if (gang >= h2_active_gang_count) return;
   uint8_t r, b;
   color_to_pwm(color, brightness, &r, &b);
+#if H2_LED_HAS_DN
   led_pwm_t *led = (pos == H2_LED_UP) ? &gangs[gang].led_up : &gangs[gang].led_dn;
+#else
+  (void)pos;
+  led_pwm_t *led = &gangs[gang].led_up;
+#endif
   led->target_red = r;
   led->target_blue = b;
 }
@@ -433,14 +464,15 @@ void h2_led_tick(void)
 {
   for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     led_pwm_t *up = &gangs[g].led_up;
-    led_pwm_t *dn = &gangs[g].led_dn;
-
     up->current_red  = step_towards(up->current_red,  up->target_red);
     up->current_blue = step_towards(up->current_blue, up->target_blue);
+    apply_pwm(up);
+
+#if H2_LED_HAS_DN
+    led_pwm_t *dn = &gangs[g].led_dn;
     dn->current_red  = step_towards(dn->current_red,  dn->target_red);
     dn->current_blue = step_towards(dn->current_blue, dn->target_blue);
-
-    apply_pwm(up);
     apply_pwm(dn);
+#endif
   }
 }

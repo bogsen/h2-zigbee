@@ -2,15 +2,21 @@
 #include "h2_relay.h"
 #include "uartdrv.h"
 #include "sl_uartdrv_instances.h"
+#include "em_eusart.h"
 #include "em_gpio.h"
 #include "pin_config.h"
+#include "sl_power_manager.h"
 #include <string.h>
 
 #include "h2_variant.h"
 
 extern uint8_t h2_active_gang_count;
 
+#if H2_HAS_DIMMER
+#define RELAY_TYPE     0x8007
+#else
 #define RELAY_TYPE     0x8002
+#endif
 #define RELAY_CMD_SET  0x02
 #define RELAY_CMD_QUERY 0x03
 
@@ -76,9 +82,35 @@ static void relay_send_packet(uint16_t type, uint8_t cmd,
   }
   sl_zigbee_app_debug_println("]");
 
+  // Hold EM1 during TX — EM2 would stop the EUSART HF clock and cause
+  // glitch pulses on the TX line that corrupt every packet
+  sl_power_manager_add_em_requirement(SL_POWER_MANAGER_EM1);
+
+#if H2_HAS_DIMMER
+  // Dimmer stock firmware: WALL2 only goes low for SET commands,
+  // held for the entire exchange. ACK/query packets don't toggle WALL2.
+  if (cmd == RELAY_CMD_SET) {
+    GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
+  }
+#else
   GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
+#endif
+
   UARTDRV_TransmitB(sl_uartdrv_eusart_wall_uart_handle, buf, total);
+
+  // TransmitB returns on DMA completion, but the EUSART shift register
+  // may still be clocking out the last byte — wait for TX complete
+  while (!(EUSART1->STATUS & EUSART_STATUS_TXC)) {}
+
+#if H2_HAS_DIMMER
+  if (cmd == RELAY_CMD_SET) {
+    GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
+  }
+#else
   GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
+#endif
+
+  sl_power_manager_remove_em_requirement(SL_POWER_MANAGER_EM1);
 }
 
 static void relay_send_set(uint8_t gang, h2_relay_state_t state)
@@ -228,6 +260,17 @@ void h2_relay_process_rx(void)
     sl_zigbee_app_debug_println("]");
   }
 
+  // Send ACK echoing the wall module's sequence number,
+  // but only for measurement reports (cmd=0x05), not for wall ACKs (cmd=0x03)
+  if (rx_dispatch_buf[4] == 0x05) {
+    uint8_t rx_seq = rx_dispatch_buf[3];
+    uint8_t saved_seq = seq;
+    seq = rx_seq;
+    uint8_t ack_payload[3] = {0, 0, 0};
+    relay_send_packet(RELAY_TYPE, RELAY_CMD_QUERY, ack_payload, 3);
+    seq = saved_seq;
+  }
+
   if (rx_callback != NULL) {
     uint16_t payload_len = ((uint16_t)rx_dispatch_buf[5] << 8) | rx_dispatch_buf[6];
     const uint8_t *payload = &rx_dispatch_buf[8];
@@ -296,6 +339,34 @@ void h2_relay_send_init(void)
   relay_send_packet(0x0080, RELAY_CMD_QUERY, NULL, 0);
   // Query 2: relay state (type=0x8001, cmd=0x03, no payload)
   relay_send_packet(0x8001, RELAY_CMD_QUERY, NULL, 0);
+
+#if H2_HAS_DIMMER
+  // Dimmer-specific init handshake — matches stock firmware UART_INIT sequence:
+  // 1) INIT_QUERY_3: gang query + level + transition (off, level 0)
+  {
+    uint8_t q3[18] = {
+      0x01, 0x00, 0x55, 0x00,                          // cmd 0x0100, marker 0x55, state=0
+      0x00, 0x1A, 0x80, 0x00, 0x00, 0x00, 0x00,        // cmd 0x001A, marker 0x80, level=0
+      0x00, 0x17, 0x80, 0x00, 0x00, 0x00, 0x00          // cmd 0x0017, marker 0x80, transition=0
+    };
+    relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, q3, sizeof(q3));
+  }
+  // 2) INIT_QUERY_2B: config registers 0x0018 (min phase) + 0x0019 (max phase)
+  {
+    uint8_t q2b[14] = {
+      0x00, 0x18, 0x80, 0x00, 0x00, 0x00, 0x01,        // cmd 0x0018, marker 0x80, value=1
+      0x00, 0x19, 0x80, 0x00, 0x00, 0x00, 0xFE          // cmd 0x0019, marker 0x80, value=254
+    };
+    relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, q2b, sizeof(q2b));
+  }
+  // 3) INIT_QUERY_1B: config register 0x001B
+  {
+    uint8_t q1b[7] = {
+      0x00, 0x1B, 0x80, 0x00, 0x00, 0x00, 0x00          // cmd 0x001B, marker 0x80, value=0
+    };
+    relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, q1b, sizeof(q1b));
+  }
+#endif
 }
 
 void h2_relay_send_measurement_query(uint8_t gang)
@@ -314,11 +385,59 @@ void h2_relay_send_measurement_query(uint8_t gang)
 }
 
 // ---------------------------------------------------------------------------
+// Dimmer level control
+// ---------------------------------------------------------------------------
+
+#if H2_HAS_DIMMER
+static uint8_t dimmer_level[H2_SWITCH_GANG_COUNT];
+
+static uint8_t brightness_curve(uint8_t level)
+{
+  float f = (float)level / 254.0f;
+  float d = f * f;  // gamma = 2.0
+  int result = (int)(d * 254.0f);
+  if (result < 1) result = 1;
+  if (result > 254) result = 254;
+  return (uint8_t)result;
+}
+
+void h2_relay_set_level(uint8_t gang, uint8_t level)
+{
+  if (gang >= h2_active_gang_count) return;
+  if (level < 1) level = 1;
+  if (level > 254) level = 254;
+  if (dimmer_level[gang] == level) return;  // skip if unchanged
+  dimmer_level[gang] = level;
+
+  uint8_t phase = brightness_curve(level);
+
+  // Level + fixed short transition for smooth stepping
+  uint8_t payload[14];
+  // Entry 1: level (cmd_id 0x001A, marker 0x80, 4-byte BE phase)
+  payload[0]  = 0x00; payload[1]  = 0x1A; payload[2]  = 0x80;
+  payload[3]  = 0x00; payload[4]  = 0x00; payload[5]  = 0x00; payload[6]  = phase;
+  // Entry 2: transition (cmd_id 0x0017, marker 0x80, 100ms fixed)
+  payload[7]  = 0x00; payload[8]  = 0x17; payload[9]  = 0x80;
+  payload[10] = 0x00; payload[11] = 0x00; payload[12] = 0x00; payload[13] = 0x64;
+  relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
+}
+
+uint8_t h2_relay_get_level(uint8_t gang)
+{
+  if (gang >= h2_active_gang_count) return 0;
+  return dimmer_level[gang];
+}
+#endif
+
+// ---------------------------------------------------------------------------
 
 void h2_relay_init(void)
 {
   for (uint8_t i = 0; i < H2_SWITCH_GANG_COUNT; i++) {
     relay_state[i] = H2_RELAY_OFF;
+#if H2_HAS_DIMMER
+    dimmer_level[i] = 254;  // default to max brightness
+#endif
   }
   GPIO_PinModeSet(WALL7_PORT, WALL7_PIN, gpioModePushPull, 1);
   GPIO_PinModeSet(WALL2_PORT, WALL2_PIN, gpioModePushPull, 1);
@@ -332,7 +451,29 @@ void h2_relay_set(uint8_t gang, h2_relay_state_t state)
     return;
   }
   relay_state[gang] = state;
+#if H2_HAS_DIMMER
+  // Dimmer uses INIT_QUERY_3 format: gang query + level + transition
+  // The gang query entry (0x0100) is required for the wall module to
+  // actually enable/disable the triac output.
+  uint8_t phase = (state == H2_RELAY_ON)
+    ? brightness_curve(dimmer_level[gang])
+    : 0x00;  // level 0 = off
+  uint8_t payload[18];
+  // Entry 1: gang query (cmd_id 0x0100, marker 0x55, 1-byte state)
+  payload[0]  = 0x01;
+  payload[1]  = gang;
+  payload[2]  = 0x55;
+  payload[3]  = (state == H2_RELAY_ON) ? 0x01 : 0x00;
+  // Entry 2: level (cmd_id 0x001A, marker 0x80, 4-byte BE)
+  payload[4]  = 0x00; payload[5]  = 0x1A; payload[6]  = 0x80;
+  payload[7]  = 0x00; payload[8]  = 0x00; payload[9]  = 0x00; payload[10] = phase;
+  // Entry 3: transition (cmd_id 0x0017, marker 0x80, 500ms like stock firmware)
+  payload[11] = 0x00; payload[12] = 0x17; payload[13] = 0x80;
+  payload[14] = 0x00; payload[15] = 0x00; payload[16] = 0x01; payload[17] = 0xF4;
+  relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
+#else
   relay_send_set(gang, state);
+#endif
 }
 
 h2_relay_state_t h2_relay_get(uint8_t gang)
@@ -348,7 +489,7 @@ h2_relay_state_t h2_relay_toggle(uint8_t gang)
   if (gang >= h2_active_gang_count) {
     return H2_RELAY_OFF;
   }
-  relay_state[gang] = (relay_state[gang] == H2_RELAY_ON) ? H2_RELAY_OFF : H2_RELAY_ON;
-  relay_send_set(gang, relay_state[gang]);
+  h2_relay_state_t new_state = (relay_state[gang] == H2_RELAY_ON) ? H2_RELAY_OFF : H2_RELAY_ON;
+  h2_relay_set(gang, new_state);
   return relay_state[gang];
 }

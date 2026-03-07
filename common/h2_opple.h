@@ -19,6 +19,20 @@
 #define OPPLE_ATTR_MULTI_CLICK       0x0286  // 1=disabled, 2=enabled
 #define OPPLE_ATTR_POWER_ON_BEHAVIOR 0x0517  // 0=on, 1=previous, 2=off, 3=inverted
 
+// Dimmer-specific attributes
+#define OPPLE_ATTR_SENSITIVITY      0x0234  // UINT16: 720=low, 360=medium, 180=high
+#define OPPLE_ATTR_PHASE            0x030A  // UINT8: 0=forward, 1=reverse
+#define OPPLE_ATTR_MIN_BRIGHTNESS   0x0515  // UINT8: 0-99%
+#define OPPLE_ATTR_MAX_BRIGHTNESS   0x0516  // UINT8: 1-100%
+
+// Knob rotation reporting attributes (Opple cluster)
+#define OPPLE_ATTR_ROTATION_ANGLE        0x022E  // INT16S: rotation angle
+#define OPPLE_ATTR_ROTATION_ANGLE_SPEED  0x0230  // UINT16: rotation speed
+#define OPPLE_ATTR_ROTATION_TIME         0x0231  // UINT16: rotation duration (ms)
+#define OPPLE_ATTR_ROTATION_PCT_SPEED    0x0232  // UINT16: percent speed
+#define OPPLE_ATTR_ROTATION_PERCENT      0x0233  // INT16S: rotation percent
+#define OPPLE_ATTR_ROTATION_ACTION       0x023A  // UINT8: action + button state
+
 // Operation mode values (note: inverted from typical expectation)
 #define OPPLE_OP_MODE_DECOUPLED     0
 #define OPPLE_OP_MODE_CONTROL_RELAY 1
@@ -52,5 +66,17 @@ void h2_opple_apply_power_on_behavior(uint8_t gang);
 
 // Re-apply LED settings from current opple config for all gangs.
 void h2_opple_init_leds(void);
+
+// Report knob rotation via Opple cluster attributes.
+// action: 1=start_rotating, 2=rotation, 3=stop_rotating
+void h2_opple_report_rotation(uint8_t endpoint, uint8_t action,
+                               int16_t angle, uint16_t angle_speed,
+                               uint16_t time_ms, int16_t percent,
+                               uint16_t percent_speed);
+
+// Get dimmer-specific config values.
+uint16_t h2_opple_get_sensitivity(uint8_t gang);
+uint8_t h2_opple_get_min_brightness(uint8_t gang);
+uint8_t h2_opple_get_max_brightness(uint8_t gang);
 
 #endif // H2_OPPLE_H

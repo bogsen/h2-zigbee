@@ -1,0 +1,10 @@
+{
+  "sdkRoot" : "/Users/bogdan/.silabs/slt/installs/conan/p/simpleb526998f4a4d/p/",
+  "apackRoot" : "/Users/bogdan/.silabs/slt/installs/archive/zap",
+  "partOpn" : "efr32mg24a410f1536im48",
+  "zcl.matterZclJsonFile" : "/Users/bogdan/.silabs/slt/installs/conan/p/matte7710ee5c0d1f2/p/src/app/zap-templates/zcl/zcl.json",
+  "zcl.zigbeeZclJsonFile" : "/Users/bogdan/.silabs/slt/installs/conan/p/simpleb526998f4a4d/p/protocol/zigbee/../../app/zcl/zcl-zap.json",
+  "boards" : "none",
+  "zcl.matterTemplateJsonFile" : "/Users/bogdan/.silabs/slt/installs/conan/p/matte7710ee5c0d1f2/p/src/app/zap-templates/app-templates.json",
+  "zcl.zigbeeTemplateJsonFile" : "/Users/bogdan/.silabs/slt/installs/conan/p/simpleb526998f4a4d/p/protocol/zigbee/app/framework/gen-template/gen-templates.json"
+}

@@ -74,3 +74,20 @@ add_custom_command(TARGET h2_switch
     COMMAND ${post_build_command}
 )
 endif()
+
+# Create OTA image after build
+add_custom_command(TARGET h2_switch
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+        -DPROJECT_NAME=h2_switch
+        -DIMAGE_TYPE=0xEDCF
+        -DOTA_STRING=H2\ Switch
+        -DMANUFACTURER_ID=0x115F
+        -DDEVICE=EFR32MG24A410F1536IM48
+        -DAPP_C=${CMAKE_CURRENT_LIST_DIR}/../app.c
+        -DS37=$<TARGET_FILE_DIR:h2_switch>/h2_switch.s37
+        -DOUT_DIR=$<TARGET_FILE_DIR:h2_switch>
+        -P ${CMAKE_CURRENT_LIST_DIR}/../../common/create_ota.cmake
+    COMMENT "Creating OTA image for h2_switch..."
+    VERBATIM
+)

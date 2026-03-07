@@ -3,6 +3,7 @@
 **/.projectlinkstore
 **/cmake_gcc/build/
 **/*.cmake
+!common/**/*.cmake
 **/CMakePresets.json
 **/*.conf
 **/.vscode/

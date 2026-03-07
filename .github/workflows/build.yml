@@ -110,6 +110,14 @@ jobs:
             --output-type cmake \
             --force
 
+          cd "${GITHUB_WORKSPACE}/h2_dimmer"
+          slc generate \
+            h2_dimmer.slcp \
+            --with EFR32MG24A410F1536IM48 \
+            --toolchain toolchain_gcc \
+            --output-type cmake \
+            --force
+
       - name: CMake configure h2_switch
         run: |
           cd h2_switch/cmake_gcc
@@ -130,8 +138,15 @@ jobs:
           cd bootloader/cmake_gcc
           "${CMAKE}" --build --preset default_config
 
-      - name: Create OTA image
-        run: h2_switch/create_ota.sh
+      - name: CMake configure h2_dimmer
+        run: |
+          cd h2_dimmer/cmake_gcc
+          "${CMAKE}" --preset project
+
+      - name: CMake build h2_dimmer
+        run: |
+          cd h2_dimmer/cmake_gcc
+          "${CMAKE}" --build --preset default_config
 
       - name: Upload h2_switch artifacts
         uses: actions/upload-artifact@v4
@@ -142,6 +157,17 @@ jobs:
             h2_switch/cmake_gcc/build/base/h2_switch.bin
             h2_switch/cmake_gcc/build/base/h2_switch.s37
             h2_switch/cmake_gcc/build/base/h2_switch.ota
+          if-no-files-found: error
+
+      - name: Upload h2_dimmer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2_dimmer-firmware-${{ github.sha }}
+          path: |
+            h2_dimmer/cmake_gcc/build/base/h2_dimmer.hex
+            h2_dimmer/cmake_gcc/build/base/h2_dimmer.bin
+            h2_dimmer/cmake_gcc/build/base/h2_dimmer.s37
+            h2_dimmer/cmake_gcc/build/base/h2_dimmer.ota
           if-no-files-found: error
 
       - name: Upload bootloader artifacts

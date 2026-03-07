@@ -15,6 +15,7 @@
 #define H2_LED_UP_B_PIN        5
 
 // LED down (bottom button) — TIMER1
+#define H2_LED_HAS_DN          1
 #define H2_LED_DN_TIMER        TIMER1
 #define H2_LED_DN_TIMER_INDEX  1
 #define H2_LED_DN_R_CC         0   // CC0
