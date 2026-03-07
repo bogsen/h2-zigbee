@@ -33,7 +33,7 @@ After rebuilding the bootloader/application:
 
 ```bash
 cp ../bootloader/cmake_gcc/build/base/bootloader.bin firmware/bootloader.bin
-cp ../h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.bin firmware/application.bin
+cp ../h2_switch/cmake_gcc/build/base/h2_switch.bin firmware/application.bin
 ```
 
 ## Usage

@@ -1,8 +1,6 @@
 #include "h2_button.h"
 
-#ifndef H2_SWITCH_GANG_COUNT
-#define H2_SWITCH_GANG_COUNT 2
-#endif
+#include "h2_variant.h"
 
 #define NUM_BUTTONS (H2_SWITCH_GANG_COUNT * 2) // up + down per gang
 

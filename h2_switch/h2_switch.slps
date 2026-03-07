@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="ASCII"?>
 <model:MDescriptors xmlns:model="http://www.silabs.com/ss/Studio.ecore">
-  <descriptors name="h2_switch_1g">
+  <descriptors name="h2_switch">
     <properties key="projectCommon.sdkId" value="com.silabs.sdk.stack.sisdk:2025.6.2._1249718913-2373502477"/>
-    <properties key="universalConfig.relativeWorkspacePath" value="../h2_switch_1g.slcw"/>
+    <properties key="universalConfig.relativeWorkspacePath" value="../h2_switch.slcw"/>
     <properties key="universalConfig.generationDirectory" value=""/>
     <properties key="universalConfig.toolchainCompatibility" value="iar gcc"/>
     <properties key="projectCommon.overwriteCopiedSources" value="false"/>

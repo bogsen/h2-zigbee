@@ -1,7 +1,10 @@
 {
     "folders": [
         {
-            "path": "h2_switch_1g"
+            "path": "common"
+        },
+        {
+            "path": "h2_switch"
         },
         {
             "path": "bootloader"

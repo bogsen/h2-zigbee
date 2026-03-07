@@ -146,4 +146,4 @@ Once the firmware is running, updates can be pushed over-the-air via Zigbee OTA 
 | `h2_opple.c/h` | Aqara Opple cluster 0xFCC0 — config attributes, NVM storage, LED control |
 | `h2_relay.c/h` | Relay control via UART to secondary power module |
 | `config/zcl/zcl_config.zap` | ZCL cluster/endpoint configuration |
-| `h2_switch_1g.slcp` | Project component and configuration |
+| `h2_switch.slcp` | Project component and configuration |

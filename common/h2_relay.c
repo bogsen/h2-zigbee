@@ -6,9 +6,7 @@
 #include "pin_config.h"
 #include <string.h>
 
-#ifndef H2_SWITCH_GANG_COUNT
-#define H2_SWITCH_GANG_COUNT 2
-#endif
+#include "h2_variant.h"
 
 extern uint8_t h2_active_gang_count;
 

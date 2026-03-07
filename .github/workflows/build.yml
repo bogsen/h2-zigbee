@@ -94,9 +94,9 @@ jobs:
           slc signature trust --sdk "${SDK_PATH}"
 
           # Generate project files (autogen + cmake)
-          cd "${GITHUB_WORKSPACE}/h2_switch_1g"
+          cd "${GITHUB_WORKSPACE}/h2_switch"
           slc generate \
-            h2_switch_1g.slcp \
+            h2_switch.slcp \
             --with EFR32MG24A410F1536IM48 \
             --toolchain toolchain_gcc \
             --output-type cmake \
@@ -110,14 +110,14 @@ jobs:
             --output-type cmake \
             --force
 
-      - name: CMake configure h2_switch_1g
+      - name: CMake configure h2_switch
         run: |
-          cd h2_switch_1g/cmake_gcc
+          cd h2_switch/cmake_gcc
           "${CMAKE}" --preset project
 
-      - name: CMake build h2_switch_1g
+      - name: CMake build h2_switch
         run: |
-          cd h2_switch_1g/cmake_gcc
+          cd h2_switch/cmake_gcc
           "${CMAKE}" --build --preset default_config
 
       - name: CMake configure bootloader
@@ -131,17 +131,17 @@ jobs:
           "${CMAKE}" --build --preset default_config
 
       - name: Create OTA image
-        run: h2_switch_1g/create_ota.sh
+        run: h2_switch/create_ota.sh
 
-      - name: Upload h2_switch_1g artifacts
+      - name: Upload h2_switch artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: h2_switch_1g-firmware-${{ github.sha }}
+          name: h2_switch-firmware-${{ github.sha }}
           path: |
-            h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.hex
-            h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.bin
-            h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.s37
-            h2_switch_1g/cmake_gcc/build/base/h2_switch_1g.ota
+            h2_switch/cmake_gcc/build/base/h2_switch.hex
+            h2_switch/cmake_gcc/build/base/h2_switch.bin
+            h2_switch/cmake_gcc/build/base/h2_switch.s37
+            h2_switch/cmake_gcc/build/base/h2_switch.ota
           if-no-files-found: error
 
       - name: Upload bootloader artifacts

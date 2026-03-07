@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Resolve paths relative to this script's directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-S37="${SCRIPT_DIR}/cmake_gcc/build/base/h2_switch_1g.s37"
+S37="${SCRIPT_DIR}/cmake_gcc/build/base/h2_switch.s37"
 APP_C="${SCRIPT_DIR}/app.c"
 
 DEVICE=EFR32MG24A410F1536IM48
@@ -55,19 +55,19 @@ echo ""
 
 # Step 1: S37 -> GBL
 echo "Creating GBL..."
-"$COMMANDER" gbl3 create "${OUT_DIR}/h2_switch_1g.gbl" \
+"$COMMANDER" gbl3 create "${OUT_DIR}/h2_switch.gbl" \
   --app "$S37" -d $DEVICE --compress lzma --force
 echo ""
 
 # Step 2: GBL -> OTA
 echo "Creating OTA file..."
 "$COMMANDER" ota create --type zigbee \
-  --upgrade-image "${OUT_DIR}/h2_switch_1g.gbl" \
+  --upgrade-image "${OUT_DIR}/h2_switch.gbl" \
   --manufacturer-id $MANUFACTURER_ID \
   --image-type $IMAGE_TYPE \
   --firmware-version "$FW_VERSION" \
-  --string "H2 Switch 1G" \
-  -o "${OUT_DIR}/h2_switch_1g.ota"
+  --string "H2 Switch" \
+  -o "${OUT_DIR}/h2_switch.ota"
 echo ""
 
-echo "Done: ${OUT_DIR}/h2_switch_1g.ota (version $FW_VERSION)"
+echo "Done: ${OUT_DIR}/h2_switch.ota (version $FW_VERSION)"

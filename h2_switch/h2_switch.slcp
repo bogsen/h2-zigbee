@@ -1,6 +1,6 @@
 # Silicon Labs Project Configuration Tools: slcp, v0, Component selection file.
-project_name: h2_switch_1g
-label: h2_switch_1g
+project_name: h2_switch
+label: h2_switch
 author: Silicon Laboratories, Inc.
 description: |
   This is a Zigbee 3.0 switch application using NVM3 as the persistent storage.
