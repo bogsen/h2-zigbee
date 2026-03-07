@@ -18,10 +18,15 @@
     <property object="PB00" propertyId="pin.name" value="WALL5"/>
     <property object="PB00" propertyId="pin.reserve" value="Reserved"/>
     <property object="PB01" propertyId="pin.name" value="WALL2"/>
+    <property object="PB02" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_SIMPLE_BUTTON_BTN4%T%sl_simple_button_btn4_config.h"/>
+    <property object="PB02" propertyId="pin.name" value="BTN4"/>
+    <property object="PB02" propertyId="pin.reserve" value="Reserved"/>
     <property object="PB03" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_SIMPLE_BUTTON_BTN1%T%sl_simple_button_btn1_config.h"/>
     <property object="PB03" propertyId="pin.name" value="BTN1"/>
     <property object="PB03" propertyId="pin.reserve" value="Reserved"/>
-    <property object="PB04" propertyId="pin.name" value=""/>
+    <property object="PB04" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_SIMPLE_BUTTON_BTN3%T%sl_simple_button_btn3_config.h"/>
+    <property object="PB04" propertyId="pin.name" value="BTN3"/>
+    <property object="PB04" propertyId="pin.reserve" value="Reserved"/>
     <property object="PB05" propertyId="ABModule.selectedRequirement" value="gpio%T%SL_SIMPLE_BUTTON_BTN2%T%sl_simple_button_btn2_config.h"/>
     <property object="PB05" propertyId="pin.name" value="BTN2"/>
     <property object="PB05" propertyId="pin.reserve" value="Reserved"/>
@@ -44,12 +49,20 @@
     <property object="PORTIO" propertyId="portio.gpio.enable.swdio" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.timer0.enable.cc0" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.timer0.enable.cc1" value="Enabled"/>
+    <property object="PORTIO" propertyId="portio.timer0.enable.cc2" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.timer0.location.cc0" value="53"/>
     <property object="PORTIO" propertyId="portio.timer0.location.cc1" value="52"/>
+    <property object="PORTIO" propertyId="portio.timer0.location.cc2" value="40"/>
     <property object="PORTIO" propertyId="portio.timer1.enable.cc0" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.timer1.enable.cc1" value="Enabled"/>
+    <property object="PORTIO" propertyId="portio.timer1.enable.cc2" value="Enabled"/>
     <property object="PORTIO" propertyId="portio.timer1.location.cc0" value="50"/>
     <property object="PORTIO" propertyId="portio.timer1.location.cc1" value="51"/>
+    <property object="PORTIO" propertyId="portio.timer1.location.cc2" value="41"/>
+    <property object="PORTIO" propertyId="portio.timer3.enable.cc0" value="Enabled"/>
+    <property object="PORTIO" propertyId="portio.timer3.enable.cc1" value="Enabled"/>
+    <property object="PORTIO" propertyId="portio.timer3.location.cc0" value="38"/>
+    <property object="PORTIO" propertyId="portio.timer3.location.cc1" value="39"/>
     <property object="PTI" propertyId="ABModule.selectedRequirement" value="pti%T%SL_RAIL_UTIL_PTI%T%sl_rail_util_pti_config.h"/>
     <property object="PTI" propertyId="ABPeripheral.included" value="true"/>
     <property object="TIMER0" propertyId="ABModule.selectedRequirement" value="timer%T%SL_PWM_LED1_B%T%sl_pwm_init_led1_b_config.h"/>

@@ -67,7 +67,7 @@ openocd \
     -c "shutdown"
 
 echo "Waiting for device to reset..."
-sleep 2
+sleep 5
 
 # Step 2: Program firmware via MSC registers
 # DCI erase already wiped flash; efr32_program handles page erase + word writes.

@@ -1,3 +1,4 @@
+#include "app/framework/include/af.h"
 #include "h2_relay.h"
 #include "uartdrv.h"
 #include "sl_uartdrv_instances.h"
@@ -6,8 +7,10 @@
 #include <string.h>
 
 #ifndef H2_SWITCH_GANG_COUNT
-#define H2_SWITCH_GANG_COUNT 1
+#define H2_SWITCH_GANG_COUNT 2
 #endif
+
+extern uint8_t h2_active_gang_count;
 
 #define RELAY_TYPE     0x8002
 #define RELAY_CMD_SET  0x02
@@ -66,15 +69,28 @@ static void relay_send_packet(uint16_t type, uint8_t cmd,
   buf[8 + payload_len]     = (uint8_t)(crc & 0xFF);
   buf[8 + payload_len + 1] = (uint8_t)(crc >> 8);
 
+  // Log TX packet
+  sl_zigbee_app_debug_print("TX PKT type=%02X%02X cmd=%02X plen=%d [",
+                             buf[1], buf[2], buf[4], payload_len);
+  uint8_t dump = (payload_len < 24) ? payload_len : 24;
+  for (uint8_t i = 0; i < dump; i++) {
+    sl_zigbee_app_debug_print("%02X", buf[8 + i]);
+  }
+  sl_zigbee_app_debug_println("]");
+
+  GPIO_PinOutClear(WALL2_PORT, WALL2_PIN);
   UARTDRV_TransmitB(sl_uartdrv_eusart_wall_uart_handle, buf, total);
+  GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
 }
 
 static void relay_send_set(uint8_t gang, h2_relay_state_t state)
 {
+  // Payload format: [cmd_hi=0x01, cmd_lo=gang, marker=0x55, value]
+  // cmd 0x0100 = gang 0 relay, cmd 0x0101 = gang 1 relay
   uint8_t payload[4];
-  payload[0] = gang + 1;  // 1-indexed channel
-  payload[1] = 0x00;
-  payload[2] = 0x55;      // data_type
+  payload[0] = 0x01;      // cmd_hi: relay control
+  payload[1] = gang;      // cmd_lo: gang index (0-based)
+  payload[2] = 0x55;      // data_type marker
   payload[3] = (state == H2_RELAY_ON) ? 0x01 : 0x00;
   relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
 }
@@ -201,6 +217,19 @@ void h2_relay_process_rx(void)
     return;
   }
 
+  // Log raw packet header + first bytes for debugging
+  {
+    uint16_t plen = ((uint16_t)rx_dispatch_buf[5] << 8) | rx_dispatch_buf[6];
+    sl_zigbee_app_debug_print("RX PKT type=%02X%02X cmd=%02X plen=%d [",
+                               rx_dispatch_buf[1], rx_dispatch_buf[2],
+                               rx_dispatch_buf[4], plen);
+    uint16_t dump = (plen < 24) ? plen : 24;
+    for (uint16_t i = 0; i < dump; i++) {
+      sl_zigbee_app_debug_print("%02X", rx_dispatch_buf[8 + i]);
+    }
+    sl_zigbee_app_debug_println("]");
+  }
+
   if (rx_callback != NULL) {
     uint16_t payload_len = ((uint16_t)rx_dispatch_buf[5] << 8) | rx_dispatch_buf[6];
     const uint8_t *payload = &rx_dispatch_buf[8];
@@ -273,24 +302,17 @@ void h2_relay_send_init(void)
 
 void h2_relay_send_measurement_query(uint8_t gang)
 {
-  // SEND_ATTR(channel, attr_id=0x0C, data_type=0x55, rw=1, float(0.0), 4)
+  // Existing working format: [0x01, 0x0C, 0x55, 0x01, float(0.0)]
   uint8_t payload[8];
-  payload[0] = gang + 1;  // 1-indexed channel
-  payload[1] = 0x0C;      // attr_id = measurement attribute
-  payload[2] = 0x55;      // data_type
+  payload[0] = 0x01;      // cmd_hi
+  payload[1] = 0x0C;      // cmd_lo: measurement attribute
+  payload[2] = 0x55;      // data_type marker
   payload[3] = 0x01;      // rw_flag = read/query
   payload[4] = 0x00;      // float(0.0) BE
   payload[5] = 0x00;
   payload[6] = 0x00;
   payload[7] = 0x00;
   relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
-}
-
-void h2_relay_send_gang_query(uint8_t gang)
-{
-  // Stock firmware sends type=0x0100+gang after status response
-  // This triggers config dump from relay module (including calibration coefficient)
-  relay_send_packet(0x0100 + gang, RELAY_CMD_QUERY, NULL, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -301,12 +323,14 @@ void h2_relay_init(void)
     relay_state[i] = H2_RELAY_OFF;
   }
   GPIO_PinModeSet(WALL7_PORT, WALL7_PIN, gpioModePushPull, 1);
+  GPIO_PinModeSet(WALL2_PORT, WALL2_PIN, gpioModePushPull, 1);
+  GPIO_PinModeSet(WALL3_PORT, WALL3_PIN, gpioModeInputPull, 1);
   uart_rx_start();
 }
 
 void h2_relay_set(uint8_t gang, h2_relay_state_t state)
 {
-  if (gang >= H2_SWITCH_GANG_COUNT) {
+  if (gang >= h2_active_gang_count) {
     return;
   }
   relay_state[gang] = state;
@@ -315,7 +339,7 @@ void h2_relay_set(uint8_t gang, h2_relay_state_t state)
 
 h2_relay_state_t h2_relay_get(uint8_t gang)
 {
-  if (gang >= H2_SWITCH_GANG_COUNT) {
+  if (gang >= h2_active_gang_count) {
     return H2_RELAY_OFF;
   }
   return relay_state[gang];
@@ -323,7 +347,7 @@ h2_relay_state_t h2_relay_get(uint8_t gang)
 
 h2_relay_state_t h2_relay_toggle(uint8_t gang)
 {
-  if (gang >= H2_SWITCH_GANG_COUNT) {
+  if (gang >= h2_active_gang_count) {
     return H2_RELAY_OFF;
   }
   relay_state[gang] = (relay_state[gang] == H2_RELAY_ON) ? H2_RELAY_OFF : H2_RELAY_ON;

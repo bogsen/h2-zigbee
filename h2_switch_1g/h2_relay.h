@@ -41,7 +41,4 @@ void h2_relay_send_init(void);
 // Send measurement query for a gang (0-indexed)
 void h2_relay_send_measurement_query(uint8_t gang);
 
-// Send gang init query (triggers config dump with calibration data)
-void h2_relay_send_gang_query(uint8_t gang);
-
 #endif // H2_RELAY_H

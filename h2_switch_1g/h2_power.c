@@ -11,10 +11,11 @@
 #define POWER_POLL_MS  1000
 
 // RX command IDs from relay module
-#define CMD_POWER    0x0504
-#define CMD_VOLTAGE  0x0601
-#define CMD_CURRENT  0x0602
-#define CMD_ENERGY   0x0608
+#define CMD_STATUS     0x0000
+#define CMD_POWER      0x0504
+#define CMD_VOLTAGE    0x0601
+#define CMD_CURRENT    0x0602
+#define CMD_ENERGY     0x0608
 
 // Lumi Opple attribute IDs for measurements (decimal IDs used by Z2M)
 // Z2M lumi.ts: 149=energy, 150=voltage, 151=current, 152=power
@@ -28,6 +29,10 @@
 #define ZCL_FC_DIRECTION_S2C       0x08
 #define ZCL_FC_DISABLE_DEFAULT_RSP 0x10
 #define ZCL_CMD_REPORT_ATTRIBUTES  0x0A
+
+extern uint8_t h2_active_gang_count;
+
+static volatile uint8_t detected_gang_count;
 
 static float voltage_raw;      // latest voltage from relay module
 static float current_raw;      // latest current from relay module
@@ -64,6 +69,12 @@ static void on_measurement_rx(uint16_t cmd_id, uint8_t data_type,
   } else if (data_len >= 1) {
     sl_zigbee_app_debug_println("RX cmd=0x%04X m=0x%02X len=%d val=0x%02X",
                                  cmd_id, data_type, data_len, data[0]);
+  }
+
+  // Status entry (0x0000) in announce: byte[0] (LE) = gang count
+  if (cmd_id == CMD_STATUS && data_len >= 1) {
+    detected_gang_count = data[0];
+    sl_zigbee_app_debug_println("Detected %d gang(s)", detected_gang_count);
   }
 
   if (data_type != 0x55 || data_len < 4) return;
@@ -179,6 +190,12 @@ void h2_power_init(void)
   h2_relay_set_rx_callback(on_measurement_rx);
   sl_zigbee_af_event_init(&power_poll_event, power_poll_handler);
 }
+
+uint8_t h2_power_get_detected_gangs(void)
+{
+  return detected_gang_count;
+}
+
 
 void h2_power_start(void)
 {

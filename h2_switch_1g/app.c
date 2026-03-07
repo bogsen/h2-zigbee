@@ -22,12 +22,11 @@
 #include "h2_opple.h"
 #include "h2_power.h"
 #include "h2_temperature.h"
+#include "sl_sleeptimer.h"
+#include "em_gpio.h"
+#include "pin_config.h"
 
-#ifndef H2_SWITCH_GANG_COUNT
-#define H2_SWITCH_GANG_COUNT 1
-#endif
-
-#define H2_FIRMWARE_VERSION  0x00000056  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000064  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define SWITCH_ENDPOINT           1
@@ -37,16 +36,19 @@
 #define COMMISSIONING_HOLD_MS     5000
 #define FACTORY_RESET_HOLD_MS     10000
 
+#define NVM3_KEY_GANG_COUNT       0x00F0
+
+// Runtime gang count (1 or 2), set at boot before module inits
+uint8_t h2_active_gang_count = 1;
+
 // Per-gang runtime state
 typedef struct {
   uint8_t endpoint;
 } gang_state_t;
 
-static gang_state_t gangs[H2_SWITCH_GANG_COUNT] = {
+static gang_state_t gangs[2] = {
   { .endpoint = 1 },
-#if H2_SWITCH_GANG_COUNT >= 2
   { .endpoint = 2 },
-#endif
 };
 
 static bool commissioning = false;
@@ -74,6 +76,63 @@ static void light_sync_handler(sl_zigbee_af_event_t *event);
 static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_action_t action);
 
 //--------------------------------------------------
+// NVM3 helpers (local to app.c)
+
+static uint8_t nvm3_read_u8(nvm3_ObjectKey_t key, uint8_t default_val)
+{
+  uint8_t val;
+  Ecode_t err = nvm3_readData(nvm3_defaultHandle, key, &val, sizeof(val));
+  return (err == ECODE_NVM3_OK) ? val : default_val;
+}
+
+static void nvm3_write_u8(nvm3_ObjectKey_t key, uint8_t val)
+{
+  nvm3_writeData(nvm3_defaultHandle, key, &val, sizeof(val));
+}
+
+//--------------------------------------------------
+// Model identifier: external attribute storage (set in ZAP as "External")
+// Returns model string based on detected gang count.
+
+static const uint8_t model_1g[] = "\x12" "lumi.switch.agl009";
+static const uint8_t model_2g[] = "\x12" "lumi.switch.agl010";
+
+sl_zigbee_af_status_t sl_zigbee_af_external_attribute_read_cb(
+    uint8_t endpoint,
+    sl_zigbee_af_cluster_id_t clusterId,
+    sl_zigbee_af_attribute_metadata_t *attributeMetadata,
+    uint16_t manufacturerCode,
+    uint8_t *buffer,
+    uint16_t maxReadLength)
+{
+  if (clusterId == ZCL_BASIC_CLUSTER_ID
+      && attributeMetadata->attributeId == ZCL_MODEL_IDENTIFIER_ATTRIBUTE_ID) {
+    const uint8_t *model = (h2_active_gang_count >= 2) ? model_2g : model_1g;
+    uint8_t total = 1 + model[0];
+    if (total > maxReadLength) {
+      return SL_ZIGBEE_ZCL_STATUS_INSUFFICIENT_SPACE;
+    }
+    memcpy(buffer, model, total);
+    return SL_ZIGBEE_ZCL_STATUS_SUCCESS;
+  }
+  return SL_ZIGBEE_ZCL_STATUS_FAILURE;
+}
+
+sl_zigbee_af_status_t sl_zigbee_af_external_attribute_write_cb(
+    uint8_t endpoint,
+    sl_zigbee_af_cluster_id_t clusterId,
+    sl_zigbee_af_attribute_metadata_t *attributeMetadata,
+    uint16_t manufacturerCode,
+    uint8_t *buffer)
+{
+  if (clusterId == ZCL_BASIC_CLUSTER_ID
+      && attributeMetadata->attributeId == ZCL_MODEL_IDENTIFIER_ATTRIBUTE_ID) {
+    return SL_ZIGBEE_ZCL_STATUS_SUCCESS;
+  }
+  return SL_ZIGBEE_ZCL_STATUS_FAILURE;
+}
+
+//--------------------------------------------------
 // Relay <-> On/Off cluster synchronization
 
 static void sync_relay_to_cluster(uint8_t gang)
@@ -95,8 +154,8 @@ static void sync_relay_to_cluster(uint8_t gang)
 
 static void handle_coupled(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
 {
-  if (action == H2_BTN_ACTION_RELEASE) {
-    return; // no relay action on release in coupled mode
+  if (action != H2_BTN_ACTION_PRESS) {
+    return; // relay already toggled on PRESS
   }
 
   if (side == H2_BTN_SIDE_UP) {
@@ -191,22 +250,22 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
 
 static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
 {
+  if (gang >= h2_active_gang_count) return;
+
   sl_zigbee_app_debug_println("Button: gang=%d side=%d action=%d", gang, side, action);
 
-  // PRESS: only used for low-latency decoupled dimming.
-  // Skip coupled mode, commissioning, and reporting (action_map[] has no entry for it).
+  // PRESS: low-latency immediate action for both modes
   if (action == H2_BTN_ACTION_PRESS) {
-    if (sl_zigbee_af_network_state() == SL_ZIGBEE_JOINED_NETWORK
-        && h2_opple_get_op_mode(gang) != OPPLE_OP_MODE_CONTROL_RELAY) {
+    if (h2_opple_get_op_mode(gang) == OPPLE_OP_MODE_CONTROL_RELAY) {
+      handle_coupled(gang, side, action);
+    } else if (sl_zigbee_af_network_state() == SL_ZIGBEE_JOINED_NETWORK) {
       handle_decoupled(gang, side, action);
     }
     return;
   }
 
-  // Coupled mode works even without network
-  if (h2_opple_get_op_mode(gang) == OPPLE_OP_MODE_CONTROL_RELAY) {
-    handle_coupled(gang, side, action);
-  }
+  // Subsequent actions (SINGLE/DOUBLE/LONG/RELEASE) — no relay action in coupled mode
+  // (already fired on PRESS), but still report and handle decoupled
 
   if (sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) {
     if (action == H2_BTN_ACTION_LONG) {
@@ -380,7 +439,7 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
   uint8_t on_off_val = *value;
 
   // Find which gang this endpoint belongs to
-  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     if (gangs[g].endpoint == endpoint) {
       if (mask == CLUSTER_MASK_SERVER) {
         // Server-side: command from coordinator or local toggle → control relay
@@ -425,7 +484,7 @@ bool sl_zigbee_af_report_attributes_cb(sl_zigbee_af_cluster_id_t clusterId,
   }
 
   uint8_t endpoint = cmd->apsFrame->destinationEndpoint;
-  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     if (gangs[g].endpoint == endpoint) {
       h2_led_update_light_state(g, on_off_val != 0);
       sl_zigbee_app_debug_println("Light report EP%d: %s", endpoint,
@@ -463,7 +522,7 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
   }
 
   uint8_t endpoint = cmd->apsFrame->destinationEndpoint;
-  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     if (gangs[g].endpoint == endpoint) {
       h2_led_update_light_state(g, on_off_val != 0);
       sl_zigbee_app_debug_println("Light sync EP%d: %s", endpoint,
@@ -481,7 +540,7 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
 static void light_sync_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
-  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     if (h2_opple_get_op_mode(g) != OPPLE_OP_MODE_CONTROL_RELAY) {
       uint8_t ep = gangs[g].endpoint;
       uint8_t attr_ids[] = {
@@ -505,18 +564,43 @@ void sl_zigbee_af_main_init_cb(void)
   // Erase storage slot 0 so stale OTA images don't get re-applied on boot
   bootloader_eraseStorageSlot(0);
 
-  // Initialize hardware modules
+  // Initialize relay UART + power RX callback (needed for gang detection)
   h2_relay_init();
+  h2_power_init();
+
+  // --- Gang count detection via relay UART ---
+  // Read NVM3 fallback first
+  uint8_t fallback_gangs = nvm3_read_u8(NVM3_KEY_GANG_COUNT, 1);
+
+  // Reset relay module to trigger announce packet (contains gang count in cmd 0x0000)
+  GPIO_PinOutClear(WALL7_PORT, WALL7_PIN);
+  sl_sleeptimer_delay_millisecond(100);
+  GPIO_PinOutSet(WALL7_PORT, WALL7_PIN);
+
+  // Wait for announce packet (relay boots in ~1-2s)
+  for (int i = 0; i < 200 && h2_power_get_detected_gangs() == 0; i++) {
+    h2_relay_process_rx();
+    sl_sleeptimer_delay_millisecond(10);
+  }
+
+  uint8_t detected = h2_power_get_detected_gangs();
+  if (detected > 0) {
+    h2_active_gang_count = (detected > 2) ? 2 : detected;
+  } else {
+    h2_active_gang_count = (fallback_gangs > 2) ? 2 : (fallback_gangs < 1) ? 1 : fallback_gangs;
+  }
+  nvm3_write_u8(NVM3_KEY_GANG_COUNT, h2_active_gang_count);
+  sl_zigbee_app_debug_println("Gang count: %d (detected=%d, fallback=%d)",
+                               h2_active_gang_count, detected, fallback_gangs);
+
+  // Initialize remaining modules (now that h2_active_gang_count is set)
   h2_button_init(on_button_action);
   h2_led_init();
   h2_opple_init();
-  h2_power_init();
   h2_temperature_init();
 
   // Send init handshake to relay module (status + relay state queries)
   h2_relay_send_init();
-  // Send gang query to trigger config dump (calibration coefficient)
-  h2_relay_send_gang_query(0);
 
   // Initialize events
   sl_zigbee_af_event_init(&button_tick_event, button_tick_handler);
@@ -540,7 +624,7 @@ void sl_zigbee_af_stack_status_cb(sl_status_t status)
 {
   if (status == SL_STATUS_NETWORK_UP) {
     sl_zigbee_app_debug_println("Network UP");
-    for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    for (uint8_t g = 0; g < h2_active_gang_count; g++) {
       h2_opple_apply_power_on_behavior(g);
       sync_relay_to_cluster(g);
     }
@@ -609,7 +693,7 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
       && msg->apsFrame->destinationEndpoint == 0xFF
       && msg->msgLen >= 3
       && (msg->message[0] & 0x03) == 0x01) {  // cluster-specific frame type
-    for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+    for (uint8_t g = 0; g < h2_active_gang_count; g++) {
       if (h2_opple_get_op_mode(g) != OPPLE_OP_MODE_CONTROL_RELAY) {
         // Update light state from the command for immediate LED feedback
         uint8_t cmd_id = msg->message[2];
@@ -635,25 +719,24 @@ void sl_button_on_change(const sl_button_t *handle)
   bool pressed = (sl_button_get_state(handle) == SL_SIMPLE_BUTTON_PRESSED);
 
   // Map simple_button instances to button indices
-  // btn1 = index 0 (up button, gang 0)
-  // For 1-gang with only btn1: index 0 for press, treat as up
-  // TODO: Update mapping when additional button instances are added
+  // btn1 = index 0 (gang 0/1 up), btn2 = index 1 (gang 0/1 down)
+  // btn3 = index 2 (gang 0 up, 2-gang only), btn4 = index 3 (gang 0 down, 2-gang only)
   if (SL_SIMPLE_BUTTON_INSTANCE(0) == handle) {
-    h2_button_on_change(0, pressed);  // gang 0, up
+    h2_button_on_change(0, pressed);
   }
 #if SL_SIMPLE_BUTTON_COUNT > 1
   else if (SL_SIMPLE_BUTTON_INSTANCE(1) == handle) {
-    h2_button_on_change(1, pressed);  // gang 0, down
+    h2_button_on_change(1, pressed);
   }
 #endif
 #if SL_SIMPLE_BUTTON_COUNT > 2
   else if (SL_SIMPLE_BUTTON_INSTANCE(2) == handle) {
-    h2_button_on_change(2, pressed);  // gang 1, up
+    h2_button_on_change(2, pressed);
   }
 #endif
 #if SL_SIMPLE_BUTTON_COUNT > 3
   else if (SL_SIMPLE_BUTTON_INSTANCE(3) == handle) {
-    h2_button_on_change(3, pressed);  // gang 1, down
+    h2_button_on_change(3, pressed);
   }
 #endif
 }

@@ -7,8 +7,10 @@
 #include "h2_relay.h"
 
 #ifndef H2_SWITCH_GANG_COUNT
-#define H2_SWITCH_GANG_COUNT 1
+#define H2_SWITCH_GANG_COUNT 2
 #endif
+
+extern uint8_t h2_active_gang_count;
 
 // ---------------------------------------------------------------------------
 // NVM3 key scheme: 0x0100 + (gang * 0x10) + offset
@@ -133,9 +135,7 @@ static int8_t endpoint_to_gang(uint8_t endpoint)
   // Endpoint 1 = gang 0 (up/left), endpoint 4 = gang 0 (down)
   // For 2-gang: endpoint 2 = gang 1, endpoint 5 = gang 1 (down)
   if (endpoint == 1 || endpoint == 4) return 0;
-#if H2_SWITCH_GANG_COUNT >= 2
-  if (endpoint == 2 || endpoint == 5) return 1;
-#endif
+  if ((endpoint == 2 || endpoint == 5) && h2_active_gang_count >= 2) return 1;
   return -1;
 }
 
@@ -219,8 +219,11 @@ static void handle_read_attributes(uint8_t endpoint, uint16_t source_node,
 
 static void update_gang_leds(uint8_t gang)
 {
-  if (gang >= H2_SWITCH_GANG_COUNT) return;
+  if (gang >= h2_active_gang_count) return;
   opple_gang_t *g = &gangs[gang];
+
+  sl_zigbee_app_debug_println("LED cfg g%d: ind=%d flip=%d lock=%d op=%d",
+    gang, g->led_indicator, g->flip_indicator, g->lock_relay, g->operation_mode);
 
   // Colors: default pink(10) for ON-state LED, blue(90) for OFF-state LED
   // lock_relay swaps the two colors
@@ -381,7 +384,7 @@ static void handle_write_attributes(uint8_t endpoint, uint16_t source_node,
 
 void h2_opple_init(void)
 {
-  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     gangs[g].mode              = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_MODE),              1); // default: event mode
     gangs[g].switch_type       = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_SWITCH_TYPE),       2); // momentary
     gangs[g].flip_indicator    = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_FLIP_INDICATOR),    0);
@@ -397,7 +400,7 @@ void h2_opple_init(void)
 
 void h2_opple_init_leds(void)
 {
-  for (uint8_t g = 0; g < H2_SWITCH_GANG_COUNT; g++) {
+  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     update_gang_leds(g);
   }
 }
@@ -480,19 +483,19 @@ void h2_opple_report_action(uint8_t endpoint, uint8_t action_value)
 
 uint8_t h2_opple_get_op_mode(uint8_t gang)
 {
-  if (gang >= H2_SWITCH_GANG_COUNT) return OPPLE_OP_MODE_CONTROL_RELAY;
+  if (gang >= h2_active_gang_count) return OPPLE_OP_MODE_CONTROL_RELAY;
   return gangs[gang].operation_mode;
 }
 
 void h2_opple_save_relay_state(uint8_t gang, bool relay_on)
 {
-  if (gang >= H2_SWITCH_GANG_COUNT) return;
+  if (gang >= h2_active_gang_count) return;
   nvm3_write_u8(NVM3_KEY(gang, NVM3_OFF_RELAY_STATE), relay_on ? 1 : 0);
 }
 
 void h2_opple_apply_power_on_behavior(uint8_t gang)
 {
-  if (gang >= H2_SWITCH_GANG_COUNT) return;
+  if (gang >= h2_active_gang_count) return;
 
   uint8_t behavior   = gangs[gang].power_on_behavior;
   uint8_t prev_state = nvm3_read_u8(NVM3_KEY(gang, NVM3_OFF_RELAY_STATE), 0);

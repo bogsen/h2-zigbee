@@ -1,10 +1,12 @@
 #include "h2_button.h"
 
 #ifndef H2_SWITCH_GANG_COUNT
-#define H2_SWITCH_GANG_COUNT 1
+#define H2_SWITCH_GANG_COUNT 2
 #endif
 
 #define NUM_BUTTONS (H2_SWITCH_GANG_COUNT * 2) // up + down per gang
+
+extern uint8_t h2_active_gang_count;
 
 #define DEFAULT_LONG_PRESS_MS   300
 #define DEFAULT_DOUBLE_PRESS_MS 300
@@ -31,9 +33,14 @@ static uint16_t long_press_ms = DEFAULT_LONG_PRESS_MS;
 static uint16_t double_press_ms = DEFAULT_DOUBLE_PRESS_MS;
 
 // Map button index to gang/side
+// 1-gang: btn0/btn1 -> gang 0
+// 2-gang: btn0/btn1 -> gang 1 (right), btn2/btn3 -> gang 0 (left)
 static inline uint8_t btn_to_gang(uint8_t btn_idx)
 {
-  return btn_idx / 2;
+  if (h2_active_gang_count >= 2) {
+    return (btn_idx < 2) ? 1 : 0;
+  }
+  return 0;
 }
 
 static inline h2_button_side_t btn_to_side(uint8_t btn_idx)
@@ -61,7 +68,7 @@ void h2_button_init(h2_button_callback_t callback)
 
 void h2_button_on_change(uint8_t button_index, bool pressed)
 {
-  if (button_index >= NUM_BUTTONS) {
+  if (button_index >= h2_active_gang_count * 2) {
     return;
   }
   if (pressed) {
@@ -73,7 +80,8 @@ void h2_button_on_change(uint8_t button_index, bool pressed)
 
 void h2_button_tick(void)
 {
-  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
+  uint8_t active_buttons = h2_active_gang_count * 2;
+  for (uint8_t i = 0; i < active_buttons; i++) {
     btn_instance_t *b = &buttons[i];
     bool press = b->pending_press;
     bool release = b->pending_release;

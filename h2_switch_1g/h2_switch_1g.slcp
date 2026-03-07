@@ -31,7 +31,7 @@ component:
 - {id: iostream_recommended_console}
 - {id: iostream_retarget_stdio}
 - {id: iostream_rtt}
-- instance: [btn1, btn2]
+- instance: [btn1, btn2, btn3, btn4]
   id: simple_button
 - {id: sl_main}
 - {id: slot_manager}

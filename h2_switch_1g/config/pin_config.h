@@ -103,6 +103,14 @@
 #define TIMER0_CC1_PIN                           4
 #endif
 
+// TIMER0 CC2 on PC08
+#ifndef TIMER0_CC2_PORT                         
+#define TIMER0_CC2_PORT                          SL_GPIO_PORT_C
+#endif
+#ifndef TIMER0_CC2_PIN                          
+#define TIMER0_CC2_PIN                           8
+#endif
+
 // [TIMER0]$
 
 // $[TIMER1]
@@ -122,12 +130,36 @@
 #define TIMER1_CC1_PIN                           3
 #endif
 
+// TIMER1 CC2 on PC09
+#ifndef TIMER1_CC2_PORT                         
+#define TIMER1_CC2_PORT                          SL_GPIO_PORT_C
+#endif
+#ifndef TIMER1_CC2_PIN                          
+#define TIMER1_CC2_PIN                           9
+#endif
+
 // [TIMER1]$
 
 // $[TIMER2]
 // [TIMER2]$
 
 // $[TIMER3]
+// TIMER3 CC0 on PC06
+#ifndef TIMER3_CC0_PORT                         
+#define TIMER3_CC0_PORT                          SL_GPIO_PORT_C
+#endif
+#ifndef TIMER3_CC0_PIN                          
+#define TIMER3_CC0_PIN                           6
+#endif
+
+// TIMER3 CC1 on PC07
+#ifndef TIMER3_CC1_PORT                         
+#define TIMER3_CC1_PORT                          SL_GPIO_PORT_C
+#endif
+#ifndef TIMER3_CC1_PIN                          
+#define TIMER3_CC1_PIN                           7
+#endif
+
 // [TIMER3]$
 
 // $[TIMER4]
@@ -264,6 +296,12 @@
 #define WALL2_PIN                                1
 #endif
 
+#ifndef BTN4_PORT                               
+#define BTN4_PORT                                SL_GPIO_PORT_B
+#endif
+#ifndef BTN4_PIN                                
+#define BTN4_PIN                                 2
+#endif
 
 #ifndef BTN1_PORT                               
 #define BTN1_PORT                                SL_GPIO_PORT_B
@@ -272,6 +310,12 @@
 #define BTN1_PIN                                 3
 #endif
 
+#ifndef BTN3_PORT                               
+#define BTN3_PORT                                SL_GPIO_PORT_B
+#endif
+#ifndef BTN3_PIN                                
+#define BTN3_PIN                                 4
+#endif
 
 #ifndef BTN2_PORT                               
 #define BTN2_PORT                                SL_GPIO_PORT_B
