@@ -20,12 +20,14 @@
 #include "h2_button.h"
 #include "h2_led.h"
 #include "h2_opple.h"
+#include "h2_power.h"
+#include "h2_temperature.h"
 
 #ifndef H2_SWITCH_GANG_COUNT
 #define H2_SWITCH_GANG_COUNT 1
 #endif
 
-#define H2_FIRMWARE_VERSION  0x00000047  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000056  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define SWITCH_ENDPOINT           1
@@ -242,6 +244,7 @@ static void on_button_action(uint8_t gang, h2_button_side_t side, h2_button_acti
 static void button_tick_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
+  h2_relay_process_rx();
   h2_button_tick();
 
   // Detect both buttons held for factory reset
@@ -507,6 +510,13 @@ void sl_zigbee_af_main_init_cb(void)
   h2_button_init(on_button_action);
   h2_led_init();
   h2_opple_init();
+  h2_power_init();
+  h2_temperature_init();
+
+  // Send init handshake to relay module (status + relay state queries)
+  h2_relay_send_init();
+  // Send gang query to trigger config dump (calibration coefficient)
+  h2_relay_send_gang_query(0);
 
   // Initialize events
   sl_zigbee_af_event_init(&button_tick_event, button_tick_handler);
@@ -536,6 +546,9 @@ void sl_zigbee_af_stack_status_cb(sl_status_t status)
     }
     // Start OTA client immediately (no random delay)
     sl_zigbee_af_ota_client_start_cb();
+    // Start measurement polling
+    h2_power_start();
+    h2_temperature_start();
     // Sync LED to bound light state after network settles
     sl_zigbee_af_event_set_delay_ms(&light_sync_event, 2000);
   } else if (status == SL_STATUS_NETWORK_DOWN) {

@@ -222,21 +222,25 @@ static void update_gang_leds(uint8_t gang)
   if (gang >= H2_SWITCH_GANG_COUNT) return;
   opple_gang_t *g = &gangs[gang];
 
-  // Color: blue=90, red=10
-  uint8_t color = g->lock_relay ? 10 : 90;
+  // Colors: default pink(10) for ON-state LED, blue(90) for OFF-state LED
+  // lock_relay swaps the two colors
+  uint8_t on_color  = g->lock_relay ? 90 : 10;
+  uint8_t off_color = g->lock_relay ? 10 : 90;
 
   if (g->led_indicator) {
+    // Coupled: UP LED shows on-state color, DOWN LED shows off-state color
+    // flip_indicator swaps which LED is UP vs DOWN
     bool decoupled = (g->operation_mode != OPPLE_OP_MODE_CONTROL_RELAY);
-    // Decoupled: follow bound light state; Coupled: follow local relay
     h2_led_set_mode(gang, decoupled ? H2_LED_MODE_FOLLOW_LIGHT
                                     : H2_LED_MODE_FOLLOW_RELAY);
-    h2_led_set_on_color(gang, color);
+    h2_led_set_on_color(gang, on_color);
+    h2_led_set_off_color(gang, off_color);
     h2_led_set_inverted(gang, g->flip_indicator != 0);
     h2_led_set_enabled(gang, true);
   } else {
-    // Manual mode: flip_indicator controls on/off directly
+    // Decoupled: both LEDs on/off together, controlled by flip_indicator
     h2_led_set_mode(gang, H2_LED_MODE_MANUAL);
-    h2_led_set_manual(gang, color, 100);
+    h2_led_set_manual(gang, off_color, 100);
     h2_led_set_enabled(gang, g->flip_indicator != 0);
   }
 }

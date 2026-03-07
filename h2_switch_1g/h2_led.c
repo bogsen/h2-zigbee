@@ -121,14 +121,18 @@ static void color_to_pwm(uint8_t color, uint8_t brightness,
   *blue_out = (uint8_t)((blue_pct * brightness * 255) / (100 * 100));
 }
 
-static void set_target(gang_led_t *g, uint8_t color, uint8_t brightness)
+static void set_target_one(led_pwm_t *led, uint8_t color, uint8_t brightness)
 {
   uint8_t r, b;
   color_to_pwm(color, brightness, &r, &b);
-  g->led_up.target_red = r;
-  g->led_up.target_blue = b;
-  g->led_dn.target_red = r;
-  g->led_dn.target_blue = b;
+  led->target_red = r;
+  led->target_blue = b;
+}
+
+static void set_target(gang_led_t *g, uint8_t color, uint8_t brightness)
+{
+  set_target_one(&g->led_up, color, brightness);
+  set_target_one(&g->led_dn, color, brightness);
 }
 
 static void update_targets(uint8_t gang)
@@ -142,14 +146,28 @@ static void update_targets(uint8_t gang)
 
   switch (g->mode) {
     case H2_LED_MODE_FOLLOW_RELAY: {
-      bool active = g->inverted ? !g->relay_on : g->relay_on;
-      set_target(g, g->on_color, active ? g->brightness : 0);
+      led_pwm_t *on_led  = g->inverted ? &g->led_dn : &g->led_up;
+      led_pwm_t *off_led = g->inverted ? &g->led_up : &g->led_dn;
+      if (g->relay_on) {
+        set_target_one(on_led, g->on_color, g->brightness);
+        set_target_one(off_led, 0, 0);
+      } else {
+        set_target_one(on_led, 0, 0);
+        set_target_one(off_led, g->off_color, g->brightness);
+      }
       break;
     }
 
     case H2_LED_MODE_FOLLOW_LIGHT: {
-      bool active = g->inverted ? !g->light_on : g->light_on;
-      set_target(g, g->on_color, active ? g->brightness : 0);
+      led_pwm_t *on_led  = g->inverted ? &g->led_dn : &g->led_up;
+      led_pwm_t *off_led = g->inverted ? &g->led_up : &g->led_dn;
+      if (g->light_on) {
+        set_target_one(on_led, g->on_color, g->brightness);
+        set_target_one(off_led, 0, 0);
+      } else {
+        set_target_one(on_led, 0, 0);
+        set_target_one(off_led, g->off_color, g->brightness);
+      }
       break;
     }
 
