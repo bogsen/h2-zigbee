@@ -1,6 +1,6 @@
 # SWD Flash Tool for H2 (EFR32MG24)
 
-Flash custom bootloader + Zigbee firmware onto Aqara H2 switch boards via the exposed SWD pads using OpenOCD and any SWD probe.
+Flash custom bootloader + Zigbee firmware onto Aqara H2 switch/dimmer boards via the exposed SWD pads using OpenOCD and any SWD probe.
 
 ## Prerequisites
 
@@ -50,16 +50,29 @@ cp ../h2_switch/cmake_gcc/build/base/h2_switch.bin firmware/application.bin
 
 # Custom firmware paths
 ./flash.sh --bootloader path/to/bootloader.bin --application path/to/app.bin
-```
 
-**Warning:** The DCI device erase permanently wipes the stock Aqara firmware. There is no way to recover it.
+# Skip backup (for repeated flashing during development)
+./flash.sh --no-backup
+
+# Non-interactive (skip confirmation prompt)
+./flash.sh --yes
+
+# Both
+./flash.sh --no-backup --yes
+```
 
 ## What it does
 
-1. **DCI device erase** — clears debug lock + all flash via the Debug Challenge Interface
-2. **MSC flash programming** — writes bootloader at `0x08000000` and application at `0x08006000` via the Memory System Controller registers
-3. **Verify** — reads back and compares against the original binaries
-4. **Reset** — starts the new firmware
+1. **Probe debug lock** — checks lock status via DCI (Debug Challenge Interface)
+2. **Backup** (unlocked devices only) — dumps the full 1536KB flash to `backups/flash_backup_YYYYMMDD_HHMMSS.bin`
+3. **Confirm** — shows a summary and asks for confirmation before erasing
+4. **Erase + program** — clears flash and writes bootloader at `0x08000000` + application at `0x08006000`
+5. **Verify** — reads back and compares against the original binaries
+6. **Reset** — starts the new firmware
+
+For **debug-locked** devices (e.g. stock H2 switch): DCI device erase is used, which clears the debug lock + all flash. No backup is possible.
+
+For **debug-unlocked** devices (e.g. stock H2 dimmer): the stock flash is backed up first, then erased via MSC registers (faster, no DCI overhead).
 
 ## Setting up a Pico as a probe
 

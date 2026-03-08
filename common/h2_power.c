@@ -136,8 +136,9 @@ static void report_measurements(float power_w)
   // voltage (0x0096 / 150): Z2M does value * 0.1, so send volts * 10
   append_attr_float(OPPLE_ATTR_VOLTAGE, voltage_raw * 10.0f);
 #endif
-  // current (0x0097 / 151): Z2M does value * 0.001, so send amps * 1000
-  append_attr_float(OPPLE_ATTR_CURRENT, current_raw * 1000.0f);
+  // current (0x0097 / 151): Z2M does value * 0.001; current_raw is centamps
+  // centamps * 10 → Z2M divides by 1000 → amps
+  append_attr_float(OPPLE_ATTR_CURRENT, current_raw * 10.0f);
   // power (0x0098 / 152): watts as-is
   append_attr_float(OPPLE_ATTR_POWER, power_w);
 
@@ -178,8 +179,8 @@ static void power_poll_handler(sl_zigbee_af_event_t *event)
   if (has_data && ++report_counter >= REPORT_INTERVAL) {
     report_counter = 0;
 
-    // Compute power from raw voltage × current
-    float power_w = voltage_raw * current_raw;
+    // current_raw is in centamps (0.01A units)
+    float power_w = voltage_raw * current_raw * 0.01f;
 
     report_measurements(power_w);
   }

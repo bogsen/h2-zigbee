@@ -76,6 +76,7 @@ void h2_opple_report_rotation(uint8_t endpoint, uint8_t action,
 
 // Get dimmer-specific config values.
 uint16_t h2_opple_get_sensitivity(uint8_t gang);
+uint8_t h2_opple_get_phase(uint8_t gang);
 uint8_t h2_opple_get_min_brightness(uint8_t gang);
 uint8_t h2_opple_get_max_brightness(uint8_t gang);
 

@@ -6,8 +6,11 @@
 #include "h2_led.h"
 #include "h2_variant.h"
 
-#if H2_HAS_RELAY
+#if H2_HAS_RELAY || H2_HAS_DIMMER
 #include "h2_relay.h"
+#endif
+#if H2_HAS_DIMMER
+#include "h2_encoder.h"
 #endif
 
 extern uint8_t h2_active_gang_count;
@@ -348,21 +351,25 @@ static void apply_attribute(uint8_t gang, uint16_t attr_id, uint16_t value)
     case OPPLE_ATTR_SENSITIVITY:
       g->sensitivity = value;
       nvm3_write_u16(NVM3_KEY(gang, NVM3_OFF_SENSITIVITY), value);
+      h2_encoder_set_sensitivity(value);
       break;
 
     case OPPLE_ATTR_PHASE:
       g->phase = value;
       nvm3_write_u8(NVM3_KEY(gang, NVM3_OFF_PHASE), value);
+      h2_relay_set_phase_mode(value);
       break;
 
     case OPPLE_ATTR_MIN_BRIGHTNESS:
       g->min_brightness = value;
       nvm3_write_u8(NVM3_KEY(gang, NVM3_OFF_MIN_BRIGHTNESS), value);
+      h2_relay_set_brightness_range(value, g->max_brightness);
       break;
 
     case OPPLE_ATTR_MAX_BRIGHTNESS:
       g->max_brightness = value;
       nvm3_write_u8(NVM3_KEY(gang, NVM3_OFF_MAX_BRIGHTNESS), value);
+      h2_relay_set_brightness_range(g->min_brightness, value);
       break;
 #endif
 
@@ -476,7 +483,7 @@ void h2_opple_init(void)
     gangs[g].multi_click       = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_MULTI_CLICK),       1); // disabled
     gangs[g].power_on_behavior = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_POWER_ON_BEHAVIOR), 1); // previous
 #if H2_HAS_DIMMER
-    gangs[g].sensitivity       = nvm3_read_u16(NVM3_KEY(g, NVM3_OFF_SENSITIVITY),    360); // medium
+    gangs[g].sensitivity       = nvm3_read_u16(NVM3_KEY(g, NVM3_OFF_SENSITIVITY),    720); // low
     gangs[g].phase             = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_PHASE),             0); // forward
     gangs[g].min_brightness    = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_MIN_BRIGHTNESS),    0);
     gangs[g].max_brightness    = nvm3_read_u8(NVM3_KEY(g, NVM3_OFF_MAX_BRIGHTNESS),  100);
@@ -686,6 +693,12 @@ uint16_t h2_opple_get_sensitivity(uint8_t gang)
 {
   if (gang >= h2_active_gang_count) return 360;
   return gangs[gang].sensitivity;
+}
+
+uint8_t h2_opple_get_phase(uint8_t gang)
+{
+  if (gang >= h2_active_gang_count) return 0;
+  return gangs[gang].phase;
 }
 
 uint8_t h2_opple_get_min_brightness(uint8_t gang)

@@ -26,7 +26,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000066  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000006c  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define SWITCH_ENDPOINT           1
@@ -205,11 +205,19 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
         // move_with_on_off so light turns on if off
         sl_zigbee_af_fill_command_level_control_cluster_move_with_on_off(0, MOVE_RATE_SLOW);
         send_cmd(ep);
-        h2_led_update_light_state(gang, true);
+        // Also send On for non-dimmable lights bound via On/Off cluster
+        sl_zigbee_af_fill_command_on_off_cluster_on();
+        send_cmd(ep);
+        // Show dimmed (both LEDs) while brightness is ramping up
+        h2_led_update_light_level(gang, 127);
       } else {
         // move (without on_off) so light doesn't turn off at level 0 during dim
         sl_zigbee_af_fill_command_level_control_cluster_move(1, MOVE_RATE_SLOW, 0, 0);
         send_cmd(ep);
+        // Show dimmed (both LEDs) while brightness is ramping down
+        if (h2_led_get_light_state(gang)) {
+          h2_led_update_light_level(gang, 127);
+        }
       }
       break;
 
@@ -217,11 +225,17 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
       // Quick tap: jump to target level. Implicitly stops any running move.
       // Single command instead of stop + move = less radio congestion.
       if (side == H2_BTN_SIDE_DOWN) {
-        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 10);
+        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 5);
+        send_cmd(ep);
+        // Also send On for non-dimmable lights bound via On/Off cluster
+        sl_zigbee_af_fill_command_on_off_cluster_on();
         send_cmd(ep);
         h2_led_update_light_state(gang, true);
       } else {
-        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(0, 10);
+        sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(0, 5);
+        send_cmd(ep);
+        // Also send Off for non-dimmable lights bound via On/Off cluster
+        sl_zigbee_af_fill_command_on_off_cluster_off();
         send_cmd(ep);
         h2_led_update_light_state(gang, false);
       }
@@ -235,12 +249,20 @@ static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_acti
       // Freeze light at current level
       sl_zigbee_af_fill_command_level_control_cluster_stop_with_on_off();
       send_cmd(ep);
+      // Light is at an intermediate level — show both LEDs
+      if (side == H2_BTN_SIDE_DOWN || h2_led_get_light_state(gang)) {
+        h2_led_update_light_level(gang, 127);
+      }
       break;
 
     case H2_BTN_ACTION_DOUBLE:
       // Cancel any running move
       sl_zigbee_af_fill_command_level_control_cluster_stop_with_on_off();
       send_cmd(ep);
+      // Light may be at an intermediate level
+      if (h2_led_get_light_state(gang)) {
+        h2_led_update_light_level(gang, 127);
+      }
       break;
   }
 }
@@ -466,30 +488,39 @@ bool sl_zigbee_af_report_attributes_cb(sl_zigbee_af_cluster_id_t clusterId,
                                         uint8_t *buffer,
                                         uint16_t bufLen)
 {
-  if (clusterId != ZCL_ON_OFF_CLUSTER_ID || bufLen < 4) {
+  if (bufLen < 4) {
     return false;
   }
 
   // Report Attributes payload: attr_id (2B LE) + type (1B) + value (1B)
   uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
-  if (attr_id != ZCL_ON_OFF_ATTRIBUTE_ID) {
-    return false;
-  }
-
-  uint8_t on_off_val = buffer[3];
 
   const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
   if (cmd == NULL) {
     return false;
   }
-
   uint8_t endpoint = cmd->apsFrame->destinationEndpoint;
-  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
-    if (gangs[g].endpoint == endpoint) {
-      h2_led_update_light_state(g, on_off_val != 0);
-      sl_zigbee_app_debug_println("Light report EP%d: %s", endpoint,
-                                   on_off_val ? "ON" : "OFF");
-      break;
+
+  if (clusterId == ZCL_ON_OFF_CLUSTER_ID
+      && attr_id == ZCL_ON_OFF_ATTRIBUTE_ID) {
+    uint8_t on_off_val = buffer[3];
+    for (uint8_t g = 0; g < h2_active_gang_count; g++) {
+      if (gangs[g].endpoint == endpoint) {
+        h2_led_update_light_state(g, on_off_val != 0);
+        sl_zigbee_app_debug_println("Light report EP%d: %s", endpoint,
+                                     on_off_val ? "ON" : "OFF");
+        break;
+      }
+    }
+  } else if (clusterId == ZCL_LEVEL_CONTROL_CLUSTER_ID
+             && attr_id == ZCL_CURRENT_LEVEL_ATTRIBUTE_ID) {
+    uint8_t level = buffer[3];
+    for (uint8_t g = 0; g < h2_active_gang_count; g++) {
+      if (gangs[g].endpoint == endpoint) {
+        h2_led_update_light_level(g, level);
+        sl_zigbee_app_debug_println("Level report EP%d: %d", endpoint, level);
+        break;
+      }
     }
   }
 
@@ -504,30 +535,42 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
                                                uint8_t *buffer,
                                                uint16_t bufLen)
 {
-  if (clusterId != ZCL_ON_OFF_CLUSTER_ID || bufLen < 5) {
+  if (bufLen < 5) {
     return false;
   }
 
   // Read Attributes Response: attr_id (2B LE) + status (1B) + type (1B) + value (1B)
   uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
-  if (attr_id != ZCL_ON_OFF_ATTRIBUTE_ID || buffer[2] != 0) {
-    return false;  // wrong attribute or read failed
+  if (buffer[2] != 0) {
+    return false;  // read failed
   }
-
-  uint8_t on_off_val = buffer[4];
 
   const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
   if (cmd == NULL) {
     return false;
   }
-
   uint8_t endpoint = cmd->apsFrame->destinationEndpoint;
-  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
-    if (gangs[g].endpoint == endpoint) {
-      h2_led_update_light_state(g, on_off_val != 0);
-      sl_zigbee_app_debug_println("Light sync EP%d: %s", endpoint,
-                                   on_off_val ? "ON" : "OFF");
-      break;
+
+  if (clusterId == ZCL_ON_OFF_CLUSTER_ID
+      && attr_id == ZCL_ON_OFF_ATTRIBUTE_ID) {
+    uint8_t on_off_val = buffer[4];
+    for (uint8_t g = 0; g < h2_active_gang_count; g++) {
+      if (gangs[g].endpoint == endpoint) {
+        h2_led_update_light_state(g, on_off_val != 0);
+        sl_zigbee_app_debug_println("Light sync EP%d: %s", endpoint,
+                                     on_off_val ? "ON" : "OFF");
+        break;
+      }
+    }
+  } else if (clusterId == ZCL_LEVEL_CONTROL_CLUSTER_ID
+             && attr_id == ZCL_CURRENT_LEVEL_ATTRIBUTE_ID) {
+    uint8_t level = buffer[4];
+    for (uint8_t g = 0; g < h2_active_gang_count; g++) {
+      if (gangs[g].endpoint == endpoint) {
+        h2_led_update_light_level(g, level);
+        sl_zigbee_app_debug_println("Level sync EP%d: %d", endpoint, level);
+        break;
+      }
     }
   }
 
@@ -547,8 +590,19 @@ static void light_sync_handler(sl_zigbee_af_event_t *event)
         LOW_BYTE(ZCL_ON_OFF_ATTRIBUTE_ID),
         HIGH_BYTE(ZCL_ON_OFF_ATTRIBUTE_ID)
       };
+      // Query On/Off state
       sl_zigbee_af_fill_command_global_client_to_server_read_attributes(
           ZCL_ON_OFF_CLUSTER_ID, attr_ids, sizeof(attr_ids));
+      sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = ep;
+      sl_zigbee_af_send_command_multicast_to_bindings();
+      sl_zigbee_af_send_command_unicast_to_bindings();
+      // Query CurrentLevel for dimmed state detection
+      uint8_t level_attr_ids[] = {
+        LOW_BYTE(ZCL_CURRENT_LEVEL_ATTRIBUTE_ID),
+        HIGH_BYTE(ZCL_CURRENT_LEVEL_ATTRIBUTE_ID)
+      };
+      sl_zigbee_af_fill_command_global_client_to_server_read_attributes(
+          ZCL_LEVEL_CONTROL_CLUSTER_ID, level_attr_ids, sizeof(level_attr_ids));
       sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = ep;
       sl_zigbee_af_send_command_multicast_to_bindings();
       sl_zigbee_af_send_command_unicast_to_bindings();
@@ -685,10 +739,18 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
                                    msg->msgLen);
   }
 
+  // Filter self-loopback: when server On/Off changes, framework sends
+  // Report Attributes to multicast bindings. We receive our own report,
+  // which would incorrectly update light_level in decoupled mode.
+  if (msg->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID
+      && msg->apsFrame->destinationEndpoint == 0xFF
+      && msg->source == sl_zigbee_af_get_node_id()) {
+    return true;  // consume self-loopback (commands and reports)
+  }
+
   // In decoupled mode, consume On/Off cluster-specific commands sent to ep 0xFF.
   // These arrive from binding-based sync (coordinator or bound lights) and must
   // not toggle the relay. Direct commands to a specific EP (e.g. EP1) pass through.
-  // Reports (global cmd 0x0A) are NOT cluster-specific, so they pass through too.
   if (msg->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID
       && msg->apsFrame->destinationEndpoint == 0xFF
       && msg->msgLen >= 3

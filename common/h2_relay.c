@@ -98,10 +98,6 @@ static void relay_send_packet(uint16_t type, uint8_t cmd,
 
   UARTDRV_TransmitB(sl_uartdrv_eusart_wall_uart_handle, buf, total);
 
-  // TransmitB returns on DMA completion, but the EUSART shift register
-  // may still be clocking out the last byte — wait for TX complete
-  while (!(EUSART1->STATUS & EUSART_STATUS_TXC)) {}
-
 #if H2_HAS_DIMMER
   if (cmd == RELAY_CMD_SET) {
     GPIO_PinOutSet(WALL2_PORT, WALL2_PIN);
@@ -351,21 +347,7 @@ void h2_relay_send_init(void)
     };
     relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, q3, sizeof(q3));
   }
-  // 2) INIT_QUERY_2B: config registers 0x0018 (min phase) + 0x0019 (max phase)
-  {
-    uint8_t q2b[14] = {
-      0x00, 0x18, 0x80, 0x00, 0x00, 0x00, 0x01,        // cmd 0x0018, marker 0x80, value=1
-      0x00, 0x19, 0x80, 0x00, 0x00, 0x00, 0xFE          // cmd 0x0019, marker 0x80, value=254
-    };
-    relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, q2b, sizeof(q2b));
-  }
-  // 3) INIT_QUERY_1B: config register 0x001B
-  {
-    uint8_t q1b[7] = {
-      0x00, 0x1B, 0x80, 0x00, 0x00, 0x00, 0x00          // cmd 0x001B, marker 0x80, value=0
-    };
-    relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, q1b, sizeof(q1b));
-  }
+  // 2) + 3) are sent by h2_relay_configure_dimmer() from app.c after opple init
 #endif
 }
 
@@ -390,6 +372,7 @@ void h2_relay_send_measurement_query(uint8_t gang)
 
 #if H2_HAS_DIMMER
 static uint8_t dimmer_level[H2_SWITCH_GANG_COUNT];
+static uint16_t on_off_transition_ms = 500;  // auto-set to 0 when min==max brightness
 
 static uint8_t brightness_curve(uint8_t level)
 {
@@ -426,6 +409,34 @@ uint8_t h2_relay_get_level(uint8_t gang)
 {
   if (gang >= h2_active_gang_count) return 0;
   return dimmer_level[gang];
+}
+
+void h2_relay_set_brightness_range(uint8_t min_pct, uint8_t max_pct)
+{
+  // Convert percentage (0-100) to phase value via brightness curve
+  uint8_t min_phase = (min_pct > 0) ? brightness_curve(min_pct * 254 / 100) : 1;
+  uint8_t max_phase = (max_pct < 100) ? brightness_curve(max_pct * 254 / 100) : 254;
+  if (min_phase < 1) min_phase = 1;
+  if (max_phase < min_phase) max_phase = min_phase;
+
+  // When min == max brightness, on/off transition is pointless — make it instant
+  on_off_transition_ms = (min_pct == max_pct) ? 0 : 500;
+
+  uint8_t payload[14] = {
+    0x00, 0x18, 0x80, 0x00, 0x00, 0x00, min_phase,
+    0x00, 0x19, 0x80, 0x00, 0x00, 0x00, max_phase
+  };
+  relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
+}
+
+void h2_relay_set_phase_mode(uint8_t mode)
+{
+  // Opple: 0=forward, 1=reverse → register: 0x00=leading edge, 0x01=trailing edge
+  uint8_t reg_val = (mode == 1) ? 0x01 : 0x00;
+  uint8_t payload[7] = {
+    0x00, 0x1B, 0x80, 0x00, 0x00, 0x00, reg_val
+  };
+  relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
 }
 #endif
 
@@ -467,9 +478,12 @@ void h2_relay_set(uint8_t gang, h2_relay_state_t state)
   // Entry 2: level (cmd_id 0x001A, marker 0x80, 4-byte BE)
   payload[4]  = 0x00; payload[5]  = 0x1A; payload[6]  = 0x80;
   payload[7]  = 0x00; payload[8]  = 0x00; payload[9]  = 0x00; payload[10] = phase;
-  // Entry 3: transition (cmd_id 0x0017, marker 0x80, 500ms like stock firmware)
+  // Entry 3: transition (cmd_id 0x0017, marker 0x80)
   payload[11] = 0x00; payload[12] = 0x17; payload[13] = 0x80;
-  payload[14] = 0x00; payload[15] = 0x00; payload[16] = 0x01; payload[17] = 0xF4;
+  payload[14] = (uint8_t)(on_off_transition_ms >> 24);
+  payload[15] = (uint8_t)(on_off_transition_ms >> 16);
+  payload[16] = (uint8_t)(on_off_transition_ms >> 8);
+  payload[17] = (uint8_t)(on_off_transition_ms);
   relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
 #else
   relay_send_set(gang, state);

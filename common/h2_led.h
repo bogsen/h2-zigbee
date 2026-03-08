@@ -39,6 +39,10 @@ void h2_led_update_relay_state(uint8_t gang, bool relay_on);
 // Update LEDs for a gang based on bound light state (for FOLLOW_LIGHT mode)
 void h2_led_update_light_state(uint8_t gang, bool light_on);
 
+// Update LEDs with actual brightness level (for FOLLOW_LIGHT mode)
+// level: 0 = off, 1-253 = dimmed (both LEDs on), 254 = fully on
+void h2_led_update_light_level(uint8_t gang, uint8_t level);
+
 // Set LED color directly (for MANUAL mode)
 // color: 0 = full red, 100 = full blue
 // brightness: 0-100
@@ -51,6 +55,9 @@ void h2_led_set_one(uint8_t gang, h2_led_position_t pos, uint8_t color, uint8_t 
 void h2_led_set_on_color(uint8_t gang, uint8_t color);
 void h2_led_set_off_color(uint8_t gang, uint8_t color);
 void h2_led_set_brightness(uint8_t gang, uint8_t brightness);
+
+// Query tracked light state (for FOLLOW_LIGHT mode decisions)
+bool h2_led_get_light_state(uint8_t gang);
 
 // Must be called periodically (~20ms) for smooth transitions
 void h2_led_tick(void);

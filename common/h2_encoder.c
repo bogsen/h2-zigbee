@@ -11,6 +11,7 @@
 #define LONG_PRESS_MS     5000
 #define CLICK_TIMEOUT_MS  300
 #define PRESS_TAP_MAX_MS  300   // max hold time to count as tap (not grip adjust)
+#define PRESS_ROT_DELAY_MS 200 // min hold time before rotation counts as intentional
 
 // Encoder: 30 detents per full revolution
 // Sensitivity maps to how many detents = full level range (0-254)
@@ -38,8 +39,18 @@ static volatile int8_t step_accum;  // accumulated steps since last FSM tick
 static fsm_state_t fsm_state;
 static uint16_t fsm_timer;
 static bool had_rotation;
-static volatile bool btn_pressed;
-static volatile bool btn_changed;
+static bool btn_pressed;   // debounced state, read by FSM
+static bool btn_changed;   // debounced edge flag, read by FSM
+
+// Button debounce (processed at 1ms in tick)
+#define DEBOUNCE_MS  10
+static volatile bool raw_pressed;
+static uint8_t debounce_count;
+static bool debounce_last;
+
+// Post-toggle cooldown: suppress new presses for this many FSM ticks
+#define TOGGLE_COOLDOWN_TICKS  20  // 200ms (20 × 10ms)
+static uint8_t toggle_cooldown;
 
 // FSM tick divider (run FSM every 10ms, quadrature every 1ms)
 static uint8_t fsm_divider;
@@ -52,6 +63,10 @@ void h2_encoder_init(h2_encoder_callback_t callback)
   had_rotation = false;
   btn_pressed = false;
   btn_changed = false;
+  raw_pressed = false;
+  debounce_count = 0;
+  debounce_last = false;
+  toggle_cooldown = 0;
   step_accum = 0;
   fsm_divider = 0;
 
@@ -66,8 +81,7 @@ void h2_encoder_init(h2_encoder_callback_t callback)
 
 void h2_encoder_on_button(bool pressed)
 {
-  btn_pressed = pressed;
-  btn_changed = true;
+  raw_pressed = pressed;
 }
 
 void h2_encoder_set_sensitivity(uint16_t value)
@@ -114,12 +128,15 @@ static void fsm_tick(void)
                             ? H2_ENC_MODE_COLOR_TEMP
                             : H2_ENC_MODE_BRIGHTNESS;
 
+  // Tick down toggle cooldown
+  if (toggle_cooldown > 0) toggle_cooldown--;
+
   switch (fsm_state) {
     case FSM_IDLE:
       if (delta != 0 && cb) {
         cb(H2_ENC_ACTION_ROTATE, delta, H2_ENC_MODE_BRIGHTNESS);
       }
-      if (changed && pressed) {
+      if (changed && pressed && toggle_cooldown == 0) {
         fsm_state = FSM_PRESSED;
         fsm_timer = 0;
         had_rotation = false;
@@ -128,25 +145,21 @@ static void fsm_tick(void)
 
     case FSM_PRESSED:
       fsm_timer += 10;
-      if (delta != 0) {
+      if (delta != 0 && fsm_timer >= PRESS_ROT_DELAY_MS) {
+        // Only accept rotation after holding for 200ms (time-based guard)
         had_rotation = true;
-        if (cb) cb(H2_ENC_ACTION_ROTATE, delta, H2_ENC_MODE_BRIGHTNESS);
+        if (cb) cb(H2_ENC_ACTION_ROTATE, delta, H2_ENC_MODE_COLOR_TEMP);
       }
       if (!had_rotation && fsm_timer >= LONG_PRESS_MS) {
         if (cb) cb(H2_ENC_ACTION_LONG_HOLD, 0, H2_ENC_MODE_BRIGHTNESS);
         fsm_state = FSM_HELD;
       } else if (changed && !pressed) {
-        if (had_rotation) {
-          // Was grip adjustment — suppress toggle
-          fsm_state = FSM_IDLE;
-        } else if (fsm_timer < PRESS_TAP_MAX_MS) {
-          // Quick tap — wait for possible double click
-          fsm_state = FSM_CLICK_WAIT;
-          fsm_timer = 0;
-        } else {
-          // Held too long without rotation — no action
-          fsm_state = FSM_IDLE;
+        if (fsm_timer < PRESS_TAP_MAX_MS && !had_rotation) {
+          // Quick tap without intentional rotation — toggle immediately
+          if (cb) cb(H2_ENC_ACTION_TOGGLE, 0, H2_ENC_MODE_BRIGHTNESS);
+          toggle_cooldown = TOGGLE_COOLDOWN_TICKS;
         }
+        fsm_state = FSM_IDLE;
       }
       break;
 
@@ -155,6 +168,7 @@ static void fsm_tick(void)
       if (delta != 0 && cb) {
         // Rotation during wait — fire toggle first, then rotation
         cb(H2_ENC_ACTION_TOGGLE, 0, H2_ENC_MODE_BRIGHTNESS);
+        toggle_cooldown = TOGGLE_COOLDOWN_TICKS;
         cb(H2_ENC_ACTION_ROTATE, delta, H2_ENC_MODE_BRIGHTNESS);
         fsm_state = FSM_IDLE;
       } else if (changed && pressed) {
@@ -163,6 +177,7 @@ static void fsm_tick(void)
       } else if (fsm_timer >= CLICK_TIMEOUT_MS) {
         // Timeout — single click
         if (cb) cb(H2_ENC_ACTION_TOGGLE, 0, H2_ENC_MODE_BRIGHTNESS);
+        toggle_cooldown = TOGGLE_COOLDOWN_TICKS;
         fsm_state = FSM_IDLE;
       }
       break;
@@ -188,6 +203,19 @@ static void fsm_tick(void)
 
 void h2_encoder_tick(void)
 {
+  // Debounce: require stable state for DEBOUNCE_MS consecutive ticks
+  bool raw = raw_pressed;
+  if (raw != debounce_last) {
+    debounce_count = 0;
+    debounce_last = raw;
+  } else if (raw != btn_pressed) {
+    if (++debounce_count >= DEBOUNCE_MS) {
+      btn_pressed = raw;
+      btn_changed = true;
+      debounce_count = 0;
+    }
+  }
+
   quadrature_tick();
 
   if (++fsm_divider >= 10) {

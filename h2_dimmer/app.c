@@ -25,7 +25,8 @@
 #include "sl_sleeptimer.h"
 #include "em_gpio.h"
 #include "pin_config.h"
-#define H2_FIRMWARE_VERSION  0x00000007  // increment for each OTA release
+
+#define H2_FIRMWARE_VERSION  0x0000001a  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
 
 #define DIMMER_ENDPOINT           1
@@ -35,15 +36,11 @@
 #define COMMISSIONING_HOLD_MS     5000
 #define FACTORY_RESET_HOLD_MS     10000
 
-// Level move rates (units/sec)
-#define MOVE_RATE_SLOW  60
-#define MOVE_RATE_FAST  254
-
-// Color temp move rate (mireds/sec)
-#define COLOR_TEMP_MOVE_RATE  50
-
-// Rotation idle timeout: stop move after no rotation for this long
+// Rotation idle timeout: stop after no rotation for this long
 #define ROTATION_IDLE_MS  200
+
+// Batch window for decoupled Step commands (ms)
+#define STEP_BATCH_MS  100
 
 // Runtime gang count (always 1 for dimmer)
 uint8_t h2_active_gang_count = 1;
@@ -51,19 +48,25 @@ uint8_t h2_active_gang_count = 1;
 static bool commissioning = false;
 static bool joined = false;
 
-// Rotation tracking for Z2M reporting
+// Batch accumulator for decoupled Step commands
+static int16_t step_batch_delta;
+static bool step_batch_pending;
+static uint16_t step_batch_timer_ms;
+
+// Rotation state for Opple reporting + idle detection
 static int16_t rotation_accum_angle;
 static uint16_t rotation_accum_time_ms;
 static bool rotation_active;
 static h2_encoder_mode_t rotation_mode;
-
-// Rotation idle timer for stopping move commands
-static uint16_t rotation_idle_timer;
-static bool move_active;
+static uint16_t rotation_idle_timer_ms;
 
 // Factory reset state (long hold from encoder)
 static bool factory_reset_active = false;
 static uint16_t factory_reset_timer_ms = 0;
+
+// Rotation cooldown after toggle (suppress accidental rotation)
+#define ROTATION_COOLDOWN_MS  200
+static uint16_t rotation_cooldown_ms = 0;
 
 // MCU-side level transition state
 #define LC_TICK_MS  50  // transition step interval (ms)
@@ -93,6 +96,7 @@ static void factory_reset_event_handler(sl_zigbee_af_event_t *event);
 static void light_sync_handler(sl_zigbee_af_event_t *event);
 static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
                                h2_encoder_mode_t mode);
+static void lc_start_transition(uint8_t target, uint16_t transition_ms);
 static void lc_stop_transition(void);
 
 // Declared in framework util/common.c
@@ -171,11 +175,20 @@ static void sync_dimmer_to_cluster(void)
 //--------------------------------------------------
 // Coupled mode handlers (direct local dimmer control)
 
-#define COUPLED_LEVEL_STEP  10
-
 // Guard to prevent post_attribute_change_cb from re-sending UART commands
 // when coupled mode code already handled the relay
 static bool coupled_updating = false;
+
+static uint8_t clamp_to_brightness_range(uint8_t level)
+{
+  uint8_t min_lvl = h2_opple_get_min_brightness(0) * 254 / 100;
+  uint8_t max_lvl = h2_opple_get_max_brightness(0) * 254 / 100;
+  if (min_lvl < 1) min_lvl = 1;
+  if (max_lvl < min_lvl) max_lvl = min_lvl;
+  if (level < min_lvl) return min_lvl;
+  if (level > max_lvl) return max_lvl;
+  return level;
+}
 
 static void sync_relay_to_cluster(void)
 {
@@ -192,16 +205,26 @@ static void sync_relay_to_cluster(void)
 
 static void handle_coupled_toggle(void)
 {
-  h2_relay_state_t state = h2_relay_toggle(0);
+  h2_relay_toggle(0);
   sync_relay_to_cluster();
 }
 
 static void handle_coupled_rotation(int8_t delta)
 {
-  int16_t level = (int16_t)h2_relay_get_level(0);
-  level += delta * COUPLED_LEVEL_STEP;
-  if (level < 1) level = 1;
-  if (level > 254) level = 254;
+  uint16_t sens = h2_opple_get_sensitivity(0);
+  uint8_t step = (uint8_t)((uint32_t)254 * 30 / sens);
+  if (step < 1) step = 1;
+
+  // Use transition target if active, else current level
+  int16_t level = lc_transition_active
+    ? (int16_t)lc_target_level
+    : (int16_t)h2_relay_get_level(0);
+  level += delta * step;
+
+  // Clamp to min/max brightness range
+  uint8_t clamped = clamp_to_brightness_range(
+    (level < 1) ? 1 : (level > 254) ? 254 : (uint8_t)level);
+  level = (int16_t)clamped;
 
   // Auto-on if currently off and rotating up
   if (h2_relay_get(0) == H2_RELAY_OFF && delta > 0) {
@@ -209,15 +232,7 @@ static void handle_coupled_rotation(int8_t delta)
     sync_relay_to_cluster();
   }
 
-  lc_stop_transition();
-  h2_relay_set_level(0, (uint8_t)level);
-
-  // Update Zigbee Level Control attribute
-  uint8_t lvl = (uint8_t)level;
-  sl_zigbee_af_write_server_attribute(
-    DIMMER_ENDPOINT, ZCL_LEVEL_CONTROL_CLUSTER_ID,
-    ZCL_CURRENT_LEVEL_ATTRIBUTE_ID,
-    &lvl, ZCL_INT8U_ATTRIBUTE_TYPE);
+  lc_start_transition((uint8_t)level, 200);
 }
 
 //--------------------------------------------------
@@ -302,7 +317,7 @@ static void handle_level_control_cmd(uint8_t cmd_id,
         if (transition_ms > 0 && h2_relay_get(0) == H2_RELAY_ON) {
           // Fade to minimum, then turn off
           lc_off_after = true;
-          lc_start_transition(1, transition_ms);
+          lc_start_transition(clamp_to_brightness_range(1), transition_ms);
         } else {
           h2_relay_set(0, H2_RELAY_OFF);
           sync_relay_to_cluster();
@@ -312,7 +327,7 @@ static void handle_level_control_cmd(uint8_t cmd_id,
           h2_relay_set(0, H2_RELAY_ON);
           sync_relay_to_cluster();
         }
-        lc_start_transition(level, transition_ms);
+        lc_start_transition(clamp_to_brightness_range(level), transition_ms);
       }
       sl_zigbee_app_debug_println("LC: MoveToLevel %d t=%dms", level, transition_ms);
       break;
@@ -327,7 +342,9 @@ static void handle_level_control_cmd(uint8_t cmd_id,
 
       uint8_t current = h2_relay_get_level(0);
       if (current < 1) current = 1;
-      uint8_t target = (direction == 0) ? 254 : 1;
+      uint8_t min_lvl = clamp_to_brightness_range(1);
+      uint8_t max_lvl = clamp_to_brightness_range(254);
+      uint8_t target = (direction == 0) ? max_lvl : min_lvl;
       uint16_t distance = (direction == 0) ? (254 - current) : (current - 1);
       uint16_t transition_ms = (rate > 0) ? ((uint32_t)distance * 1000 / rate) : 0;
 
@@ -356,69 +373,92 @@ static void handle_level_control_cmd(uint8_t cmd_id,
 //--------------------------------------------------
 // Encoder action callback (decoupled mode helpers)
 
+static void flush_step_batch(void)
+{
+  if (!step_batch_pending || step_batch_delta == 0) {
+    step_batch_pending = false;
+    step_batch_delta = 0;
+    return;
+  }
+
+  uint16_t sens = h2_opple_get_sensitivity(0);
+  int16_t delta = step_batch_delta;
+  step_batch_delta = 0;
+  step_batch_pending = false;
+  step_batch_timer_ms = 0;
+
+  if (rotation_mode == H2_ENC_MODE_BRIGHTNESS) {
+    uint16_t step_per_detent = (uint16_t)((uint32_t)254 * 30 / sens);
+    if (step_per_detent < 1) step_per_detent = 1;
+    uint16_t total_step = (uint16_t)((delta > 0 ? delta : -delta)) * step_per_detent;
+    if (total_step > 254) total_step = 254;
+
+    uint8_t step_mode = (delta > 0) ? 0 : 1;  // 0=up, 1=down
+    if (delta > 0) {
+      sl_zigbee_af_fill_command_level_control_cluster_step_with_on_off(
+        step_mode, (uint8_t)total_step, 2);
+      h2_led_update_light_state(0, true);
+    } else {
+      sl_zigbee_af_fill_command_level_control_cluster_step(
+        step_mode, (uint8_t)total_step, 2, 0, 0);
+    }
+    send_cmd();
+  } else {
+    uint16_t ct_step_per_detent = (uint16_t)((uint32_t)347 * 30 / sens);
+    if (ct_step_per_detent < 1) ct_step_per_detent = 1;
+    uint16_t total_step = (uint16_t)((delta > 0 ? delta : -delta)) * ct_step_per_detent;
+
+    uint8_t step_mode = (delta > 0) ? 1 : 3;  // 1=up(warmer), 3=down(cooler)
+    sl_zigbee_af_fill_command_color_control_cluster_step_color_temperature(
+      step_mode, total_step, 2, 153, 500, 0, 0);
+    send_cmd();
+  }
+
+  // Opple rotation reports only on start/stop (not per-batch)
+  // to avoid TX queue congestion during fast rotation
+}
+
 static void handle_rotation(int8_t delta, h2_encoder_mode_t mode)
 {
   if (!joined) return;
+  if (rotation_cooldown_ms > 0) return;
 
-  // Track rotation for Z2M reporting
+  // Accumulate for Step batch
+  step_batch_delta += delta;
+  step_batch_pending = true;
+
+  // Accumulate for Opple report
   rotation_accum_angle += delta * 12;  // ~12 degrees per detent
   rotation_accum_time_ms += 10;
 
   if (!rotation_active) {
     rotation_active = true;
     rotation_mode = mode;
+    step_batch_timer_ms = STEP_BATCH_MS;  // force immediate flush
 
     // Report start_rotating to Z2M
     h2_opple_report_rotation(DIMMER_ENDPOINT, 1,
       rotation_accum_angle, 0, rotation_accum_time_ms, 0, 0);
-
-    // Start move command to bindings
-    if (mode == H2_ENC_MODE_BRIGHTNESS) {
-      if (delta > 0) {
-        sl_zigbee_af_fill_command_level_control_cluster_move_with_on_off(0, MOVE_RATE_SLOW);
-      } else {
-        sl_zigbee_af_fill_command_level_control_cluster_move(1, MOVE_RATE_SLOW, 0, 0);
-      }
-      send_cmd();
-    } else {
-      // Color temp: move_color_temperature
-      uint8_t move_mode = (delta > 0) ? 1 : 3;  // 1=up (warmer), 3=down (cooler)
-      sl_zigbee_af_fill_command_color_control_cluster_move_color_temperature(
-        move_mode, COLOR_TEMP_MOVE_RATE, 153, 500, 0, 0);
-      send_cmd();
-    }
   }
 
-  // Report rotation to Z2M
-  h2_opple_report_rotation(DIMMER_ENDPOINT, 2,
-    rotation_accum_angle, 0, rotation_accum_time_ms, 0, 0);
-
   // Reset idle timer
-  rotation_idle_timer = 0;
-  move_active = true;
+  rotation_idle_timer_ms = 0;
 }
 
 static void stop_rotation(void)
 {
   if (!rotation_active) return;
 
+  // Flush any remaining batch
+  flush_step_batch();
+
   // Report stop_rotating to Z2M
   h2_opple_report_rotation(DIMMER_ENDPOINT, 3,
     rotation_accum_angle, 0, rotation_accum_time_ms, 0, 0);
 
-  // Send stop command to bindings
-  if (rotation_mode == H2_ENC_MODE_BRIGHTNESS) {
-    sl_zigbee_af_fill_command_level_control_cluster_stop_with_on_off();
-    send_cmd();
-  } else {
-    sl_zigbee_af_fill_command_color_control_cluster_stop_move_step(0, 0);
-    send_cmd();
-  }
-
   rotation_active = false;
   rotation_accum_angle = 0;
   rotation_accum_time_ms = 0;
-  move_active = false;
 }
 
 static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
@@ -450,7 +490,19 @@ static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
         handle_coupled_toggle();
         h2_opple_report_action(DIMMER_ENDPOINT, 1);
       } else if (joined) {
-        // Toggle on/off to bindings
+        rotation_cooldown_ms = ROTATION_COOLDOWN_MS;
+        if (h2_led_get_light_state(0)) {
+          // Light is on → fade off
+          sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(0, 5);
+          send_cmd();
+          h2_led_update_light_state(0, false);
+        } else {
+          // Light is off → fade to full brightness
+          sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 5);
+          send_cmd();
+          h2_led_update_light_state(0, true);
+        }
+        // Also send On/Off Toggle for non-dimmable lights bound via On/Off cluster
         sl_zigbee_af_fill_command_on_off_cluster_toggle();
         send_cmd();
         h2_opple_report_action(DIMMER_ENDPOINT, 1);
@@ -512,13 +564,21 @@ static void encoder_tick_handler(sl_zigbee_af_event_t *event)
     }
   }
 
-  // Rotation idle detection (check every 10ms via the FSM divider)
-  if (move_active) {
-    rotation_idle_timer++;
-    if (rotation_idle_timer >= (ROTATION_IDLE_MS / 1)) {
+  // Batch timer + idle detection (1ms tick)
+  if (rotation_active) {
+    rotation_idle_timer_ms++;
+    if (rotation_idle_timer_ms >= ROTATION_IDLE_MS) {
       stop_rotation();
+    } else if (step_batch_pending) {
+      step_batch_timer_ms++;
+      if (step_batch_timer_ms >= STEP_BATCH_MS) {
+        flush_step_batch();
+      }
     }
   }
+
+  // Rotation cooldown after toggle
+  if (rotation_cooldown_ms > 0) rotation_cooldown_ms--;
 
   // Factory reset timer (while held)
   if (factory_reset_active) {
@@ -643,6 +703,7 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
       && !coupled_updating) {
     uint8_t level = *value;
     if (level > 0) {
+      level = clamp_to_brightness_range(level);
       if (h2_relay_get(0) == H2_RELAY_OFF) {
         h2_relay_set(0, H2_RELAY_ON);
         h2_led_update_relay_state(0, true);
@@ -725,7 +786,19 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
                                    msg->msgLen);
   }
 
-  // In decoupled mode, consume binding-based On/Off cluster-specific commands
+  // Filter self-loopback: when server On/Off changes, framework sends
+  // Report Attributes to multicast bindings. We receive our own report,
+  // which would incorrectly update light_level and cause the LED to
+  // follow relay state instead of bound light state.
+  if (msg->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID
+      && msg->apsFrame->destinationEndpoint == 0xFF
+      && msg->source == sl_zigbee_af_get_node_id()) {
+    return true;  // consume self-loopback (commands and reports)
+  }
+
+  // Consume binding-based On/Off cluster-specific commands (ep 0xFF).
+  // Coupled: ignore — relay only controlled locally or by direct Z2M commands.
+  // Decoupled: update LED from bound light state.
   if (msg->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID
       && msg->apsFrame->destinationEndpoint == 0xFF
       && msg->msgLen >= 3
@@ -737,16 +810,21 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
       } else if (cmd_id == 0x00) {
         h2_led_update_light_state(0, false);
       }
-      return true;  // consume
     }
+    return true;  // always consume — never let binding On/Off change relay
   }
 
-  // Handle Level Control cluster-specific commands → control local dimmer
+  // Handle binding-based Level Control (endpoint 0xFF) — from bound switches
+  // Direct commands (from Z2M, endpoint 1) fall through to framework for response
   if (msg->apsFrame->clusterId == ZCL_LEVEL_CONTROL_CLUSTER_ID
       && msg->msgLen >= 3
-      && (msg->message[0] & 0x03) == 0x01) {
+      && (msg->message[0] & 0x03) == 0x01
+      && msg->apsFrame->destinationEndpoint == 0xFF) {
+    if (h2_opple_get_op_mode(0) != OPPLE_OP_MODE_CONTROL_RELAY) {
+      return true;  // decoupled: consume self-loopback silently
+    }
     handle_level_control_cmd(msg->message[2], &msg->message[3], msg->msgLen - 3);
-    return true;
+    return true;  // coupled: handle Move/Stop from switches locally
   }
 
   return false;
@@ -778,6 +856,11 @@ void sl_zigbee_af_main_init_cb(void)
 
   // Send init handshake to dimmer module
   h2_relay_send_init();
+
+  // Configure wall module with stored min/max brightness and phase mode
+  h2_relay_set_brightness_range(h2_opple_get_min_brightness(0),
+                                h2_opple_get_max_brightness(0));
+  h2_relay_set_phase_mode(h2_opple_get_phase(0));
 
   // Initialize events
   sl_zigbee_af_event_init(&encoder_tick_event, encoder_tick_handler);
@@ -812,6 +895,7 @@ void sl_zigbee_af_stack_status_cb(sl_status_t status)
         ZCL_LEVEL_CONTROL_CLUSTER_ID, ZCL_CURRENT_LEVEL_ATTRIBUTE_ID,
         &level, sizeof(level));
       if (level < 1) level = 254;
+      level = clamp_to_brightness_range(level);
       h2_relay_set_level(0, level);
     }
 

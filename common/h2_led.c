@@ -31,7 +31,7 @@ typedef struct {
   uint8_t off_color;   // 0-100 (R->B)
   uint8_t manual_color;
   bool relay_on;
-  bool light_on;
+  uint8_t light_level;  // 0=off, 1-253=dimmed, 254=fully on
   led_pwm_t led_up;
   led_pwm_t led_dn;
 } gang_led_t;
@@ -197,7 +197,8 @@ static void update_targets(uint8_t gang)
         set_target_one(off_led, g->off_color, g->brightness);
       }
 #else
-      if (g->relay_on) {
+      bool relay_state = g->inverted ? !g->relay_on : g->relay_on;
+      if (relay_state) {
         set_target_one(&g->led_up, g->on_color, g->brightness);
       } else {
         set_target_one(&g->led_up, g->off_color, g->brightness);
@@ -210,15 +211,20 @@ static void update_targets(uint8_t gang)
 #if H2_LED_HAS_DN
       led_pwm_t *on_led  = g->inverted ? &g->led_dn : &g->led_up;
       led_pwm_t *off_led = g->inverted ? &g->led_up : &g->led_dn;
-      if (g->light_on) {
+      if (g->light_level == 0) {
+        set_target_one(on_led, 0, 0);
+        set_target_one(off_led, g->off_color, g->brightness);
+      } else if (g->light_level >= 254) {
         set_target_one(on_led, g->on_color, g->brightness);
         set_target_one(off_led, 0, 0);
       } else {
-        set_target_one(on_led, 0, 0);
+        // Dimmed: both LEDs on
+        set_target_one(on_led, g->on_color, g->brightness);
         set_target_one(off_led, g->off_color, g->brightness);
       }
 #else
-      if (g->light_on) {
+      bool light_state = g->inverted ? (g->light_level == 0) : (g->light_level > 0);
+      if (light_state) {
         set_target_one(&g->led_up, g->on_color, g->brightness);
       } else {
         set_target_one(&g->led_up, g->off_color, g->brightness);
@@ -269,7 +275,7 @@ static void init_gang_defaults(uint8_t g)
   gangs[g].off_color = 90;
   gangs[g].manual_color = 50;
   gangs[g].relay_on = false;
-  gangs[g].light_on = false;
+  gangs[g].light_level = 0;
 }
 
 //--------------------------------------------------
@@ -405,13 +411,24 @@ void h2_led_update_relay_state(uint8_t gang, bool relay_on)
   }
 }
 
-void h2_led_update_light_state(uint8_t gang, bool light_on)
+void h2_led_update_light_level(uint8_t gang, uint8_t level)
 {
   if (gang >= h2_active_gang_count) return;
-  gangs[gang].light_on = light_on;
+  gangs[gang].light_level = level;
   if (gangs[gang].mode == H2_LED_MODE_FOLLOW_LIGHT) {
     update_targets(gang);
   }
+}
+
+void h2_led_update_light_state(uint8_t gang, bool light_on)
+{
+  h2_led_update_light_level(gang, light_on ? 254 : 0);
+}
+
+bool h2_led_get_light_state(uint8_t gang)
+{
+  if (gang >= h2_active_gang_count) return false;
+  return gangs[gang].light_level > 0;
 }
 
 void h2_led_set_manual(uint8_t gang, uint8_t color, uint8_t brightness)

@@ -48,6 +48,12 @@ void h2_relay_set_level(uint8_t gang, uint8_t level);
 
 // Get current dimmer brightness level (1-254) for a gang
 uint8_t h2_relay_get_level(uint8_t gang);
+
+// Set min/max brightness range on wall module (percentage 0-100)
+void h2_relay_set_brightness_range(uint8_t min_pct, uint8_t max_pct);
+
+// Set phase mode on wall module (0=forward, 1=reverse)
+void h2_relay_set_phase_mode(uint8_t mode);
 #endif
 
 #endif // H2_RELAY_H
