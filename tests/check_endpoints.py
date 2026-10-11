@@ -235,6 +235,12 @@ for variant in ("h2_dimmer", "h2_switch"):
     prefix += re.search(r"^#define CONTROL_ENDPOINT\s+\d+", source, re.MULTILINE)[0] + "\n"
     if dimmer:
         prefix += "#define DIMMER_ENDPOINT 1\nuint8_t h2_active_gang_count = 1;\n"
+        prefix += """
+#define BRIGHTNESS_SAVE_MS 500
+static bool brightness_restored = true;
+static sl_zigbee_af_event_t brightness_save_event;
+static void sl_zigbee_af_event_set_delay_ms(sl_zigbee_af_event_t *event, int delay) {}
+"""
         assert "sourceEndpoint = CONTROL_ENDPOINT" in function(source, "send_cmd")
         assert "h2_opple_report_rotation(DIMMER_ENDPOINT," in source
         assert "h2_opple_report_action(DIMMER_ENDPOINT," in source

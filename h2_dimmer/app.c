@@ -26,7 +26,9 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000023  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000025  // increment for each OTA release
+#define NVM3_KEY_BRIGHTNESS  0x0201
+#define BRIGHTNESS_SAVE_MS  500
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
 
 #define DIMMER_ENDPOINT           1
@@ -88,6 +90,9 @@ static sl_zigbee_af_event_t commissioning_event;
 static sl_zigbee_af_event_t factory_reset_event;
 static sl_zigbee_af_event_t light_sync_event;
 static sl_zigbee_af_event_t power_on_event;
+static sl_zigbee_af_event_t brightness_save_event;
+static bool brightness_restored;
+static uint8_t saved_brightness;
 
 //--------------------------------------------------
 // Bound-light report routing
@@ -275,14 +280,29 @@ static void sync_relay_to_cluster(void)
   h2_opple_save_relay_state(0, state == H2_RELAY_ON);
 }
 
+static void brightness_save_handler(sl_zigbee_af_event_t *event)
+{
+  sl_zigbee_af_event_set_inactive(event);
+  uint8_t level = h2_relay_get_level(0);
+  if (level == saved_brightness || level < 1 || level > 254) return;
+  Ecode_t err = nvm3_writeData(nvm3_defaultHandle, NVM3_KEY_BRIGHTNESS,
+                              &level, sizeof(level));
+  if (err == ECODE_NVM3_OK) {
+    saved_brightness = level;
+  } else {
+    sl_zigbee_app_debug_println("Brightness save failed: 0x%lX", (unsigned long)err);
+    sl_zigbee_af_event_set_delay_ms(event, BRIGHTNESS_SAVE_MS);
+  }
+}
+
 static void power_on_handler(sl_zigbee_af_event_t *event)
 {
   sl_zigbee_af_event_set_inactive(event);
   uint8_t level = 254;
-  sl_zigbee_af_read_server_attribute(DIMMER_ENDPOINT,
-    ZCL_LEVEL_CONTROL_CLUSTER_ID, ZCL_CURRENT_LEVEL_ATTRIBUTE_ID,
-    &level, sizeof(level));
-  if (level < 1 || level > 254) level = 254;
+  Ecode_t err = nvm3_readData(nvm3_defaultHandle, NVM3_KEY_BRIGHTNESS,
+                             &level, sizeof(level));
+  if (err != ECODE_NVM3_OK || level < 1 || level > 254) level = 254;
+  saved_brightness = level;
   level = clamp_to_brightness_range(level);
   h2_relay_set_level(0, level);
   h2_opple_apply_power_on_behavior(0);
@@ -293,6 +313,7 @@ static void power_on_handler(sl_zigbee_af_event_t *event)
     &level, ZCL_INT8U_ATTRIBUTE_TYPE);
   coupled_updating = false;
   sync_relay_to_cluster();
+  brightness_restored = true;
 }
 
 //--------------------------------------------------
@@ -803,6 +824,13 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
     }
     sl_zigbee_app_debug_println("Dimmer level: %d", level);
   }
+
+  // Coalesce knob/transition updates; only the local output level is persisted.
+  // shortcut: power loss within 500 ms of the last update can retain the older level.
+  if (brightness_restored && clusterId == ZCL_LEVEL_CONTROL_CLUSTER_ID
+      && attributeId == ZCL_CURRENT_LEVEL_ATTRIBUTE_ID && *value > 0) {
+    sl_zigbee_af_event_set_delay_ms(&brightness_save_event, BRIGHTNESS_SAVE_MS);
+  }
 }
 
 //--------------------------------------------------
@@ -1020,6 +1048,7 @@ void sl_zigbee_af_main_init_cb(void)
   sl_zigbee_af_event_init(&factory_reset_event, factory_reset_event_handler);
   sl_zigbee_af_event_init(&light_sync_event, light_sync_handler);
   sl_zigbee_af_event_init(&power_on_event, power_on_handler);
+  sl_zigbee_af_event_init(&brightness_save_event, brightness_save_handler);
 
   // Defer until ZCL initialization finishes; restore even without a network.
   sl_zigbee_af_event_set_active(&power_on_event);

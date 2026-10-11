@@ -9,8 +9,9 @@ Custom firmware for the Aqara H2 switch and dimmer (EFR32MG24A410F1536IM48), bui
 - Dimmer with local On/Off and Level Control, configurable brightness limits and phase mode.
 - Coupled mode (default) for local control; decoupled mode for controlling bound lights while the local output remains independently controllable over Zigbee.
 - Persistent configuration and power-on behavior: on, previous, off, or inverted. Both variants restore their outputs at startup without waiting for a network; reconnecting does not reapply the setting.
+- The dimmer remembers its local brightness across reboots, clamped to the configured limits. Brightness is saved after 500 ms without a level change; power loss during that interval can retain the older level.
 - Red/blue LED feedback for local output or bound-light state.
-- Current, active power and accumulated energy reporting; voltage reporting on the dimmer. Device temperature comes from the MCU sensor, with a fixed correction, rather than a room-temperature sensor.
+- Current, active power and accumulated energy reporting; voltage reporting on the dimmer. Both variants report wall-module temperature with zero calibration offset.
 - Aqara Opple configuration and action reports compatible with the existing Zigbee2MQTT converter; no custom converter is required. Compatibility has been checked through manual use, not a complete test of every stock setting.
 
 The switch has two buttons and two bicolor LEDs per gang; the dimmer has a rotary push encoder and one bicolor LED. Both communicate with the secondary wall module over 115200-baud UART. Pin and timer assignments live in each variant's `h2_variant.h` and `config/` directory.

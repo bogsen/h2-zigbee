@@ -8,6 +8,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 power = (ROOT / 'common/h2_power.c').read_text()
 relay = (ROOT / 'common/h2_relay.c').read_text()
+temperature = (ROOT / 'common/h2_temperature.c').read_text()
 
 
 def function(source, name):
@@ -30,6 +31,7 @@ prefix = r'''
 #define H2_SWITCH_GANG_COUNT (H2_HAS_DIMMER ? 1 : 2)
 #define SL_ZIGBEE_JOINED_NETWORK 1
 #define ZCL_FLOAT_SINGLE_ATTRIBUTE_TYPE 0x39
+#define ZCL_INT8S_ATTRIBUTE_TYPE 0x28
 #define AQARA_MFG_CODE 0x115f
 #define OPPLE_CLUSTER_ID 0xfcc0
 #define HA_PROFILE_ID 0x0104
@@ -75,6 +77,7 @@ static int sl_zigbee_af_network_state(void) { return joined; }
 static uint8_t sl_zigbee_af_next_sequence(void) { return 42; }
 static void sl_zigbee_af_event_init(sl_zigbee_af_event_t *e, void (*fn)(sl_zigbee_af_event_t *)) { e->delay = 0; }
 static void sl_zigbee_af_event_set_delay_ms(sl_zigbee_af_event_t *e, unsigned ms) { e->delay = ms; }
+static void sl_zigbee_af_event_set_active(sl_zigbee_af_event_t *e) { e->delay = 0; }
 static Ecode_t nvm3_readData(int h, unsigned key, void *data, size_t len)
 {
     assert(key == 0x0200 && len == sizeof(double));
@@ -93,7 +96,7 @@ static void sl_zigbee_af_send_unicast(int kind, uint16_t target,
 {
     assert(target == 0 && aps->clusterId == 0xfcc0 && aps->sourceEndpoint == 1);
     assert(aps->destinationEndpoint == 1 && aps->profileId == 0x0104);
-    assert(len >= 12 && len <= 33 && data[0] == 0x1c);
+    assert((len == 9 || (len >= 12 && len <= 33)) && data[0] == 0x1c);
     assert(data[1] == 0x5f && data[2] == 0x11 && data[4] == 0x0a);
     reports++;
 }
@@ -114,6 +117,7 @@ parts += [function(relay, name) for name in [
     'h2_relay_process_rx', 'h2_relay_send_measurement_query']]
 # Keep the entire production translation unit except platform/project includes.
 parts.append(re.sub(r'^#include "[^"\n]+"\n', '', power, flags=re.MULTILINE))
+parts.append(re.sub(r'^#include "[^"\n]+"\n', '', temperature, flags=re.MULTILINE))
 parts.append(r'''
 static void advance(unsigned seconds) { clock_ticks += seconds * 32768u; }
 static void poll(void) { power_poll_handler(&power_poll_event); }
@@ -143,17 +147,52 @@ static float attribute(uint16_t id)
 static void reboot(void)
 {
     memset(&power, 0, sizeof(power)); memset(&current, 0, sizeof(current));
+    memset(&temperature, 0, sizeof(temperature));
 #if H2_HAS_DIMMER
     memset(&voltage, 0, sizeof(voltage));
 #endif
     energy_kwh = 0; energy_dirty = false; energy_available = false;
     report_counter = 0; clock_ticks = 0; writes = reports = 0; joined = false;
     h2_power_init();
+    h2_temperature_init();
     assert(power_poll_event.delay == 1000);
+}
+static void check_temperature(bool expected, int value)
+{
+    unsigned before = reports;
+    temp_poll_handler(&temp_poll_event);
+    assert(temp_poll_event.delay == 30000);
+    assert(reports == before + (expected ? 1 : 0));
+    if (expected) {
+        assert(appResponseLength == 9);
+        assert(appResponseData[5] == 3 && appResponseData[6] == 0);
+        assert(appResponseData[7] == 0x28 && (int8_t)appResponseData[8] == value);
+    }
 }
 int main(void)
 {
     reboot();
+    h2_temperature_start(); assert(temp_poll_event.delay == 0);
+    joined = true; check_temperature(false, 0);
+    feed(0x0608, 27.75f); check_temperature(true, 27);
+    feed(0x0608, -5.75f); check_temperature(true, -5);
+    feed(0x0608, 0); check_temperature(true, 0);
+    const float bad_temperature[] = {NAN, INFINITY, -INFINITY, -128, 128, FLT_MAX};
+    for (unsigned i = 0; i < sizeof(bad_temperature)/sizeof(bad_temperature[0]); i++) {
+        feed(0x0608, 27); feed(0x0608, bad_temperature[i]); check_temperature(false, 0);
+    }
+    float temp = 25;
+    on_measurement_rx(0x0608, 0x80, (uint8_t *)&temp, 4);
+    on_measurement_rx(0x0608, 0x55, (uint8_t *)&temp, 3);
+    check_temperature(false, 0);
+    feed(0x0608, 25); advance(14); check_temperature(true, 25);
+    advance(1); check_temperature(false, 0); poll(); assert(!temperature.valid);
+    feed(0x0608, 26); joined = false; check_temperature(false, 0);
+    joined = true; check_temperature(true, 26);
+    clock_ticks = UINT32_MAX - 32768;
+    feed(0x0608, 28); advance(3); check_temperature(true, 28);
+    advance(12); check_temperature(false, 0);
+    reboot(); joined = true; check_temperature(false, 0);
     assert(energy_available && energy_kwh == 0);
     joined = true;
     report_measurements(clock_ticks);
@@ -174,7 +213,7 @@ int main(void)
 #if H2_HAS_DIMMER
         6, 0, 0x55,
 #endif
-        6, 1, 0x55, 6, 2, 0x55};
+        6, 1, 0x55, 6, 2, 0x55, 6, 8, 0x55};
     assert(last_tx[0] == 0x55 && last_tx[1] == 0x80);
     assert(last_tx[2] == (H2_HAS_DIMMER ? 7 : 2) && last_tx[4] == 1);
     assert(last_tx[5] == 0 && last_tx[6] == sizeof(query));
@@ -251,4 +290,4 @@ with tempfile.TemporaryDirectory(prefix='h2-measurements-') as tmp:
         subprocess.run(['cc', '-std=c99', '-Wall', '-Werror', '-fsanitize=address,undefined',
                         f'-DH2_HAS_DIMMER={dimmer}', str(source), '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
-print('Switch + dimmer: UART parsing/query, units, freshness, offline energy, persistence, rollover PASS')
+print('Switch + dimmer: UART parsing/query, units, temperature, freshness, offline energy, persistence, rollover PASS')

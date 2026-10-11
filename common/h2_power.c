@@ -18,6 +18,7 @@
 #define CMD_VOLTAGE    0x0600
 #define CMD_CURRENT    0x0601
 #define CMD_POWER      0x0602
+#define CMD_TEMPERATURE 0x0608
 
 // Lumi Opple attribute IDs for measurements (decimal IDs used by Z2M)
 // Z2M lumi.ts: 149=energy, 150=voltage, 151=current, 152=power
@@ -45,6 +46,7 @@ static measurement_t voltage;
 #endif
 static measurement_t current;
 static measurement_t power;
+static measurement_t temperature;
 
 #define SAMPLE_MAX_AGE_SECONDS  15
 #define ENERGY_SAVE_SECONDS    300
@@ -112,13 +114,16 @@ static void on_measurement_rx(uint16_t cmd_id, uint8_t data_type,
   if (data_type != 0x55 || data_len != sizeof(float)) return;
 
   measurement_t *measurement;
-  float max_value;
+  float min_value = 0, max_value;
   switch (cmd_id) {
 #if H2_HAS_DIMMER
     case CMD_VOLTAGE: measurement = &voltage; max_value = 1000.0f; break;
 #endif
     case CMD_CURRENT: measurement = &current; max_value = 100000.0f; break;
     case CMD_POWER:   measurement = &power;   max_value = 100000.0f; break;
+    case CMD_TEMPERATURE:
+      // ZCL signed 8-bit temperature reserves -128 for an invalid value.
+      measurement = &temperature; min_value = -127.0f; max_value = 127.0f; break;
     default: return;
   }
 
@@ -127,7 +132,7 @@ static void on_measurement_rx(uint16_t cmd_id, uint8_t data_type,
   float value;
   memcpy(&value, data, sizeof(value));
   // Broad plausibility bounds, not load limits or calibration factors.
-  measurement->valid = isfinite(value) && value >= 0 && value <= max_value;
+  measurement->valid = isfinite(value) && value >= min_value && value <= max_value;
   if (measurement->valid) {
     measurement->value = value;
     measurement->updated = now;
@@ -207,6 +212,7 @@ static void power_poll_handler(sl_zigbee_af_event_t *event)
   if (!measurement_fresh(&voltage, now)) voltage.valid = false;
 #endif
   if (!measurement_fresh(&current, now)) current.valid = false;
+  if (!measurement_fresh(&temperature, now)) temperature.valid = false;
 
   if ((uint32_t)(now - save_tick)
       >= sl_sleeptimer_get_timer_frequency() * ENERGY_SAVE_SECONDS) {
@@ -257,6 +263,13 @@ void h2_power_init(void)
 uint8_t h2_power_get_detected_gangs(void)
 {
   return detected_gang_count;
+}
+
+bool h2_power_get_temperature(float *value)
+{
+  if (!measurement_fresh(&temperature, sl_sleeptimer_get_tick_count())) return false;
+  *value = temperature.value;
+  return true;
 }
 
 

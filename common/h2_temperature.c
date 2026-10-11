@@ -1,11 +1,10 @@
 #include "app/framework/include/af.h"
 #include "app/framework/util/common.h"
-#include "em_device.h"
+#include "h2_power.h"
 #include "h2_temperature.h"
 #include "h2_opple.h"
 
 #define TEMP_POLL_MS  30000
-#define EMU_TEMP_ZERO_C_IN_KELVIN  273.15f
 
 // Z2M lumi_specific fromZigbee: key 3 = device_temperature (raw int, °C)
 #define OPPLE_ATTR_DEVICE_TEMPERATURE  0x0003
@@ -22,14 +21,7 @@ static sl_zigbee_af_event_t temp_poll_event;
 extern uint8_t appResponseData[];
 extern uint16_t appResponseLength;
 
-static float get_chip_temperature(void)
-{
-  return ((float)((EMU->TEMP & (_EMU_TEMP_TEMP_MASK | _EMU_TEMP_TEMPLSB_MASK))
-                  >> _EMU_TEMP_TEMPLSB_SHIFT))
-         / 4.0f - EMU_TEMP_ZERO_C_IN_KELVIN;
-}
-
-static void report_temperature(int32_t temp_int)
+static void report_temperature(int8_t temp_int)
 {
   if (sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) return;
 
@@ -43,12 +35,11 @@ static void report_temperature(int32_t temp_int)
   appResponseData[appResponseLength++] = sl_zigbee_af_next_sequence();
   appResponseData[appResponseLength++] = ZCL_CMD_REPORT_ATTRIBUTES;
 
-  // Attribute 0x0003: device_temperature as INT32S
+  // Attribute 0x0003: signed whole degrees, matching stock firmware.
   appResponseData[appResponseLength++] = (uint8_t)(OPPLE_ATTR_DEVICE_TEMPERATURE & 0xFF);
   appResponseData[appResponseLength++] = (uint8_t)(OPPLE_ATTR_DEVICE_TEMPERATURE >> 8);
-  appResponseData[appResponseLength++] = ZCL_INT32S_ATTRIBUTE_TYPE;  // 0x2B
-  memcpy(&appResponseData[appResponseLength], &temp_int, 4);
-  appResponseLength += 4;
+  appResponseData[appResponseLength++] = ZCL_INT8S_ATTRIBUTE_TYPE;  // 0x28
+  appResponseData[appResponseLength++] = (uint8_t)temp_int;
 
   sl_zigbee_aps_frame_t aps = {
     .profileId           = HA_PROFILE_ID,
@@ -71,10 +62,8 @@ static void temp_poll_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
 
-  float temp_c = get_chip_temperature() - 5.0f;
-  int32_t temp_int = (int32_t)temp_c;
-
-  report_temperature(temp_int);
+  float temp_c;
+  if (h2_power_get_temperature(&temp_c)) report_temperature((int8_t)temp_c);
 
   sl_zigbee_af_event_set_delay_ms(&temp_poll_event, TEMP_POLL_MS);
 }
@@ -86,6 +75,6 @@ void h2_temperature_init(void)
 
 void h2_temperature_start(void)
 {
-  // Fire immediately so Z2M gets a value right away
+  // Report immediately if a fresh sample is already available.
   sl_zigbee_af_event_set_active(&temp_poll_event);
 }

@@ -11,7 +11,7 @@ typedef enum {
 } h2_relay_state_t;
 
 // RX callback: called from main loop with parsed command entry fields
-// cmd_id: combined command (0x0600=voltage on dimmer, 0x0601=mA, 0x0602=W)
+// cmd_id: combined command (0x0600=voltage on dimmer, 0x0601=mA, 0x0602=W, 0x0608=°C)
 // data_type: entry data type (0x55=float/value)
 // data: little-endian value, valid for the duration of the callback
 // data_len: actual value length (1 or 4 for supported command groups)

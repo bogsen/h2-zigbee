@@ -34,6 +34,12 @@ prefix = r'''
 #define H2_HAS_RELAY 0
 #define H2_HAS_DIMMER 1
 #define DIMMER_ENDPOINT 1
+#define NVM3_KEY_BRIGHTNESS 0x0201
+#define BRIGHTNESS_SAVE_MS 500
+#define LC_TICK_MS 50
+#define ECODE_NVM3_OK 0
+typedef int Ecode_t;
+static void *nvm3_defaultHandle;
 #define ZCL_ON_OFF_CLUSTER_ID 6
 #define ZCL_LEVEL_CONTROL_CLUSTER_ID 8
 #define ZCL_ON_OFF_ATTRIBUTE_ID 0
@@ -56,7 +62,25 @@ typedef enum { H2_RELAY_OFF, H2_RELAY_ON } h2_relay_state_t;
 static uint8_t h2_active_gang_count = 1;
 static struct { uint8_t power_on_behavior; } gangs[1];
 static uint8_t stored_state, min_pct, max_pct, attr_on, attr_level;
-static bool led_on, coupled_updating, joined, read_fails;
+static bool led_on, coupled_updating, joined, read_fails, write_fails;
+static bool brightness_restored, lc_transition_active, lc_off_after;
+static uint8_t saved_brightness, stored_brightness, lc_target_level;
+static uint16_t lc_tick_counter, lc_total_ticks;
+static int32_t lc_level_fp, lc_step_per_tick;
+static unsigned brightness_writes, brightness_delays;
+static sl_zigbee_af_event_t brightness_save_event;
+static Ecode_t nvm3_readData(void *handle, int key, void *data, size_t size)
+{
+    assert(key == NVM3_KEY_BRIGHTNESS && size == 1);
+    if (read_fails) return 1;
+    *(uint8_t *)data = stored_brightness; return 0;
+}
+static Ecode_t nvm3_writeData(void *handle, int key, const void *data, size_t size)
+{
+    assert(key == NVM3_KEY_BRIGHTNESS && size == 1);
+    if (write_fails) return 1;
+    stored_brightness = *(const uint8_t *)data; brightness_writes++; return 0;
+}
 static h2_relay_state_t relay_state[1];
 static uint8_t dimmer_level[1];
 static uint16_t on_off_transition_ms = 500;
@@ -68,9 +92,12 @@ static void nvm3_write_u8(int key, uint8_t value) { stored_state = value; nvm_wr
 static uint8_t h2_opple_get_min_brightness(uint8_t gang) { return min_pct; }
 static uint8_t h2_opple_get_max_brightness(uint8_t gang) { return max_pct; }
 static void h2_led_update_relay_state(uint8_t gang, bool on) { led_on = on; }
-static void lc_stop_transition(void) {}
 static void sl_zigbee_af_event_set_inactive(sl_zigbee_af_event_t *event) { event->active = false; }
-static void sl_zigbee_af_event_set_delay_ms(sl_zigbee_af_event_t *event, int delay) {}
+static void sl_zigbee_af_event_set_delay_ms(sl_zigbee_af_event_t *event, int delay)
+{
+    event->active = true;
+    if (event == &brightness_save_event) { assert(delay == BRIGHTNESS_SAVE_MS); brightness_delays++; }
+}
 static void sl_zigbee_af_ota_client_start_cb(void) {}
 static void h2_power_start(void) {}
 static void h2_temperature_start(void) {}
@@ -84,12 +111,6 @@ static void relay_send_packet(uint16_t type, uint8_t command, const uint8_t *dat
 }
 void sl_zigbee_af_post_attribute_change_cb(uint8_t, sl_zigbee_af_cluster_id_t,
     sl_zigbee_af_attribute_id_t, uint8_t, uint16_t, uint8_t, uint8_t, uint8_t *);
-static void sl_zigbee_af_read_server_attribute(uint8_t ep, uint16_t cluster,
-    uint16_t attr, uint8_t *value, size_t size)
-{
-    assert(ep == 1 && cluster == 8 && attr == 0);
-    if (!read_fails) *value = attr_level;
-}
 static void sl_zigbee_af_write_server_attribute(uint8_t ep, uint16_t cluster,
     uint16_t attr, uint8_t *value, uint8_t type)
 {
@@ -100,11 +121,16 @@ static void sl_zigbee_af_write_server_attribute(uint8_t ep, uint16_t cluster,
                                          0, type, 1, value);
 }
 '''
+# Keep timing and persistence keys aligned with the firmware under test.
+for name in ['NVM3_KEY_BRIGHTNESS', 'BRIGHTNESS_SAVE_MS', 'LC_TICK_MS']:
+    definition = re.search(rf'^#define {name}\s+\S+', app, re.MULTILINE)[0]
+    prefix = re.sub(rf'^#define {name}\s+\S+', lambda _: definition, prefix, flags=re.MULTILINE)
 parts = [prefix]
 for source, names in [
-    (relay, ['brightness_curve', 'h2_relay_set_level', 'h2_relay_set', 'h2_relay_get']),
+    (relay, ['brightness_curve', 'h2_relay_set_level', 'h2_relay_set', 'h2_relay_get', 'h2_relay_get_level']),
     (opple, ['h2_opple_save_relay_state', 'h2_opple_apply_power_on_behavior']),
-    (app, ['clamp_to_brightness_range', 'sync_relay_to_cluster', 'power_on_handler',
+    (app, ['clamp_to_brightness_range', 'sync_relay_to_cluster', 'brightness_save_handler',
+           'power_on_handler', 'lc_transition_tick', 'lc_start_transition', 'lc_stop_transition',
            'sl_zigbee_af_post_attribute_change_cb', 'sl_zigbee_af_stack_status_cb']),
 ]:
     parts += [function(source, name) for name in names]
@@ -120,7 +146,9 @@ int main(void)
         gangs[0].power_on_behavior = behavior;
         stored_state = previous;
         min_pct = ranges[r][0]; max_pct = ranges[r][1];
-        attr_on = 0; attr_level = initial_levels[l];
+        stored_brightness = initial_levels[l];
+        attr_on = 0; attr_level = 0; // ZCL RAM resets on every boot.
+        brightness_restored = false; brightness_save_event.active = false;
         relay_state[0] = H2_RELAY_OFF; dimmer_level[0] = 254;
         led_on = false; coupled_updating = false;
         state_packets = nvm_writes = 0;
@@ -129,7 +157,7 @@ int main(void)
                          || (behavior == 3 && !previous);
         // No network callback is needed for startup restoration.
         power_on_handler(&event);
-        assert(!event.active);
+        assert(!event.active && brightness_restored && !brightness_save_event.active);
         assert(state_packets == 1 && nvm_writes == 1);
         assert(relay_state[0] == expected && stored_state == expected);
         assert(attr_on == expected && led_on == expected);
@@ -152,8 +180,8 @@ int main(void)
         assert(state_packets == packets && nvm_writes == writes);
         assert(relay_state[0] == changed && stored_state == changed);
     }
-    // A failed attribute read still restores at a valid, clamped brightness.
-    read_fails = true; min_pct = 99; max_pct = 100;
+    // Missing or unreadable persistence still restores a valid, clamped default.
+    read_fails = true; brightness_restored = false; min_pct = 99; max_pct = 100;
     gangs[0].power_on_behavior = 1; stored_state = 1;
     sl_zigbee_af_event_t event = {true};
     power_on_handler(&event);
@@ -161,15 +189,69 @@ int main(void)
     unsigned packets = state_packets;
     h2_opple_apply_power_on_behavior(1);
     assert(state_packets == packets);
+
+    read_fails = false; min_pct = 0; max_pct = 100;
+    saved_brightness = stored_brightness = 254; brightness_writes = 0;
+    // Incoming Zigbee brightness changes coalesce until the save event fires.
+    for (uint8_t level = 10; level <= 100; level += 10) {
+        sl_zigbee_af_post_attribute_change_cb(1, 8, 0, CLUSTER_MASK_SERVER, 0, 0x20, 1, &level);
+    }
+    assert(brightness_save_event.active && brightness_writes == 0);
+    brightness_save_handler(&brightness_save_event);
+    assert(stored_brightness == 100 && brightness_writes == 1 && !brightness_save_event.active);
+    // Repeated levels do not wear flash; zero/unrelated endpoints don't schedule saves.
+    uint8_t value = 100;
+    sl_zigbee_af_post_attribute_change_cb(1, 8, 0, CLUSTER_MASK_SERVER, 0, 0x20, 1, &value);
+    brightness_save_handler(&brightness_save_event);
+    assert(brightness_writes == 1);
+    unsigned delays = brightness_delays;
+    value = 0;
+    sl_zigbee_af_post_attribute_change_cb(1, 8, 0, CLUSTER_MASK_SERVER, 0, 0x20, 1, &value);
+    value = 200;
+    sl_zigbee_af_post_attribute_change_cb(11, 8, 0, CLUSTER_MASK_SERVER, 0, 0x20, 1, &value);
+    assert(brightness_delays == delays);
+    // Local knob/group transitions also save, despite the UART recursion guard.
+    lc_start_transition(150, 200);
+    while (lc_transition_active) lc_transition_tick();
+    assert(brightness_save_event.active && brightness_writes == 1);
+    brightness_save_handler(&brightness_save_event);
+    assert(stored_brightness == 150 && brightness_writes == 2);
+    lc_start_transition(160, 0);
+    brightness_save_handler(&brightness_save_event);
+    assert(stored_brightness == 160);
+    // Stopping mid-transition stores the actual attained level.
+    lc_start_transition(200, 200);
+    lc_transition_tick(); lc_stop_transition();
+    uint8_t stopped = h2_relay_get_level(0);
+    brightness_save_handler(&brightness_save_event);
+    assert(stored_brightness == stopped && stopped > 160 && stopped < 200);
+    // Failure preserves the previous saved value and retries the latest level.
+    value = 180; write_fails = true;
+    sl_zigbee_af_post_attribute_change_cb(1, 8, 0, CLUSTER_MASK_SERVER, 0, 0x20, 1, &value);
+    brightness_save_handler(&brightness_save_event);
+    assert(stored_brightness == stopped && saved_brightness == stopped && brightness_save_event.active);
+    write_fails = false;
+    brightness_save_handler(&brightness_save_event);
+    assert(stored_brightness == 180 && !brightness_save_event.active);
+    // Cold boot restores persistent brightness while preserving an OFF policy.
+    brightness_restored = false; attr_level = 0; dimmer_level[0] = 254;
+    gangs[0].power_on_behavior = 2;
+    power_on_handler(&event);
+    assert(attr_level == 180 && dimmer_level[0] == 180 && !relay_state[0]);
+    assert(!brightness_save_event.active);
+    // Changed limits clamp the stored level before any output is enabled.
+    brightness_restored = false; max_pct = 50; gangs[0].power_on_behavior = 0;
+    power_on_handler(&event);
+    assert(attr_level == 127 && dimmer_level[0] == 127 && relay_state[0]);
     return 0;
 }
 ''')
 with tempfile.TemporaryDirectory(prefix='h2-power-on-') as tmp:
     source, binary = Path(tmp) / 'check.c', Path(tmp) / 'check'
     source.write_text('\n'.join(parts))
-    subprocess.run(['cc', '-std=c99', '-Wall', '-Werror', str(source), '-o', str(binary)], check=True)
+    subprocess.run(['cc', '-std=c99', '-Wall', '-Werror', '-fsanitize=address,undefined', str(source), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
-print('Dimmer startup: on/previous/off/inverted, UART payload, brightness limits, offline boot, reconnect PASS')
+print('Dimmer startup: power-on modes, UART, persistent brightness, coalescing/retry, limits, offline boot, reconnect PASS')
 
 # Exercise both switch gangs using the real startup, persistence and UART code.
 app = (ROOT / 'h2_switch/app.c').read_text()

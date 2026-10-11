@@ -362,6 +362,7 @@ void h2_relay_send_measurement_query(uint8_t gang)
 #endif
     0x06, 0x01, 0x55,  // milliamps
     0x06, 0x02, 0x55,  // watts
+    0x06, 0x08, 0x55,  // degrees Celsius
   };
   relay_send_packet(RELAY_TYPE, RELAY_CMD_READ, payload, sizeof(payload));
 }
