@@ -26,7 +26,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x00000022  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000023  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
 
 #define DIMMER_ENDPOINT           1

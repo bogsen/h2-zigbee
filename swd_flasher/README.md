@@ -27,14 +27,16 @@ The header is 2.54mm pitch — a pogo pin adapter can be used for solderless pro
 
 For a Pico running debugprobe firmware, the default SWD pins are GP2 (SWCLK) and GP3 (SWDIO).
 
-## Updating firmware binaries
+## Selecting firmware binaries
 
-After rebuilding the bootloader/application:
+From this directory, pass the freshly built binaries explicitly:
 
 ```bash
-cp ../bootloader/cmake_gcc/build/base/bootloader.bin firmware/bootloader.bin
-cp ../h2_switch/cmake_gcc/build/base/h2_switch.bin firmware/application.bin
+./flash.sh --bootloader ../bootloader/cmake_gcc/build/base/bootloader.bin \
+  --application ../h2_switch/cmake_gcc/build/base/h2_switch.bin
 ```
+
+For a dimmer, use `../h2_dimmer/cmake_gcc/build/base/h2_dimmer.bin`. Without explicit paths, the script uses `firmware/bootloader.bin` and `firmware/application.bin`; check their variant and version before use.
 
 ## Usage
 
@@ -63,16 +65,16 @@ cp ../h2_switch/cmake_gcc/build/base/h2_switch.bin firmware/application.bin
 
 ## What it does
 
-1. **Probe debug lock** — checks lock status via DCI (Debug Challenge Interface)
-2. **Backup** (unlocked devices only) — dumps the full 1536KB flash to `backups/flash_backup_YYYYMMDD_HHMMSS.bin`
-3. **Confirm** — shows a summary and asks for confirmation before erasing
-4. **Erase + program** — clears flash and writes bootloader at `0x08000000` + application at `0x08006000`
+1. **Attempt backup** — dumps the full 1536 KiB flash to `backups/flash_backup_YYYYMMDD_HHMMSS.bin`, unless `--no-backup` is supplied. A failure prints a warning and continues to confirmation.
+2. **Confirm** — shows a summary and asks for confirmation before erasing, unless `--yes` is supplied
+3. **DCI device erase** — clears the debug lock and all flash, including installed firmware and settings
+4. **Program** — writes bootloader at `0x08000000` + application at `0x08006000` via MSC registers
 5. **Verify** — reads back and compares against the original binaries
 6. **Reset** — starts the new firmware
 
-For **debug-locked** devices (e.g. stock H2 switch): DCI device erase is used, which clears the debug lock + all flash. No backup is possible.
+For **debug-locked** devices, the backup attempt cannot read flash. Do not proceed expecting to recover stock firmware without an existing usable dump.
 
-For **debug-unlocked** devices (e.g. stock H2 dimmer): the stock flash is backed up first, then erased via MSC registers (faster, no DCI overhead).
+For **debug-unlocked** devices, a backup can be read before erasure. The script still uses DCI device erase; it does not select a different erase method based on lock status. Preserve and verify any stock backup. Restoring stock firmware is not a validated workflow here.
 
 ## Setting up a Pico as a probe
 

@@ -26,7 +26,7 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x0000006f  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000071  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
 #define CONTROL_ENDPOINT          11
@@ -149,6 +149,7 @@ static sl_zigbee_af_event_t finding_and_binding_event;
 static sl_zigbee_af_event_t commissioning_event;
 static sl_zigbee_af_event_t factory_reset_event;
 static sl_zigbee_af_event_t light_sync_event;
+static sl_zigbee_af_event_t power_on_event;
 
 //--------------------------------------------------
 // Forward declarations
@@ -232,6 +233,18 @@ static void sync_relay_to_cluster(uint8_t gang)
     ZCL_BOOLEAN_ATTRIBUTE_TYPE);
   h2_led_update_relay_state(gang, state == H2_RELAY_ON);
   h2_opple_save_relay_state(gang, state == H2_RELAY_ON);
+}
+
+//--------------------------------------------------
+// Restore after ZCL initialization, independently of network availability.
+
+static void power_on_handler(sl_zigbee_af_event_t *event)
+{
+  sl_zigbee_af_event_set_inactive(event);
+  for (uint8_t g = 0; g < h2_active_gang_count; g++) {
+    h2_opple_apply_power_on_behavior(g);
+    sync_relay_to_cluster(g);
+  }
 }
 
 //--------------------------------------------------
@@ -755,6 +768,8 @@ void sl_zigbee_af_main_init_cb(void)
   sl_zigbee_af_event_init(&commissioning_event, commissioning_event_handler);
   sl_zigbee_af_event_init(&factory_reset_event, factory_reset_event_handler);
   sl_zigbee_af_event_init(&light_sync_event, light_sync_handler);
+  sl_zigbee_af_event_init(&power_on_event, power_on_handler);
+  sl_zigbee_af_event_set_active(&power_on_event);
 
   // Reduce APS ACK timeout from default 1600ms to 500ms.
   // Default assumes 30 hops; a home network is 1-2 hops.
@@ -770,10 +785,6 @@ void sl_zigbee_af_stack_status_cb(sl_status_t status)
 {
   if (status == SL_STATUS_NETWORK_UP) {
     sl_zigbee_app_debug_println("Network UP");
-    for (uint8_t g = 0; g < h2_active_gang_count; g++) {
-      h2_opple_apply_power_on_behavior(g);
-      sync_relay_to_cluster(g);
-    }
     // Start OTA client immediately (no random delay)
     sl_zigbee_af_ota_client_start_cb();
     // Start measurement polling

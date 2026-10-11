@@ -5,6 +5,8 @@
 #include "h2_relay.h"
 #include "h2_opple.h"
 #include "h2_variant.h"
+#include "nvm3_default.h"
+#include "sl_sleeptimer.h"
 
 #include <string.h>
 #include <math.h>
@@ -13,16 +15,15 @@
 
 // RX command IDs from relay module
 #define CMD_STATUS     0x0000
-#define CMD_POWER      0x0504
-#define CMD_VOLTAGE    0x0601
-#define CMD_CURRENT    0x0602
-#define CMD_ENERGY     0x0608
+#define CMD_VOLTAGE    0x0600
+#define CMD_CURRENT    0x0601
+#define CMD_POWER      0x0602
 
 // Lumi Opple attribute IDs for measurements (decimal IDs used by Z2M)
 // Z2M lumi.ts: 149=energy, 150=voltage, 151=current, 152=power
 #define OPPLE_ATTR_ENERGY   0x0095  // 149: energy in kWh (float)
-#define OPPLE_ATTR_VOLTAGE  0x0096  // 150: voltage × 10 (uint16, Z2M divides by 10)
-#define OPPLE_ATTR_CURRENT  0x0097  // 151: current in mA (uint16, Z2M divides by 1000)
+#define OPPLE_ATTR_VOLTAGE  0x0096  // 150: dimmer volts × 100 (float)
+#define OPPLE_ATTR_CURRENT  0x0097  // 151: current in mA (float)
 #define OPPLE_ATTR_POWER    0x0098  // 152: power in W (float)
 
 // ZCL frame control constants
@@ -31,14 +32,54 @@
 #define ZCL_FC_DISABLE_DEFAULT_RSP 0x10
 #define ZCL_CMD_REPORT_ATTRIBUTES  0x0A
 
-extern uint8_t h2_active_gang_count;
-
 static volatile uint8_t detected_gang_count;
 
-static float voltage_raw;      // latest voltage from relay module
-static float current_raw;      // latest current from relay module
-static float energy_kwh;       // energy from announce packet
-static bool has_data;          // true after first valid measurement received
+typedef struct {
+  float value;
+  uint32_t updated;
+  bool valid;
+} measurement_t;
+
+#if H2_HAS_DIMMER
+static measurement_t voltage;
+#endif
+static measurement_t current;
+static measurement_t power;
+
+#define SAMPLE_MAX_AGE_SECONDS  15
+#define ENERGY_SAVE_SECONDS    300
+#define NVM3_KEY_ENERGY_KWH     0x0200  // separate from Opple's 0x0100..0x011F
+
+static double energy_kwh;
+static bool energy_available;
+static bool energy_dirty;
+static uint32_t energy_tick;
+static uint32_t save_tick;
+
+static bool measurement_fresh(const measurement_t *measurement, uint32_t now)
+{
+  return measurement->valid
+         && (uint32_t)(now - measurement->updated)
+            < sl_sleeptimer_get_timer_frequency() * SAMPLE_MAX_AGE_SECONDS;
+}
+
+static void accumulate_energy(uint32_t now)
+{
+  uint32_t frequency = sl_sleeptimer_get_timer_frequency();
+  uint32_t age = energy_tick - power.updated;
+  uint32_t max_age = frequency * SAMPLE_MAX_AGE_SECONDS;
+  if (energy_available && power.valid && age < max_age) {
+    uint32_t elapsed = now - energy_tick;
+    if (elapsed > max_age - age) elapsed = max_age - age;
+    if (elapsed != 0 && power.value > 0) {
+      energy_kwh += (double)power.value * elapsed / ((double)frequency * 3600000.0);
+      energy_dirty = true;
+    }
+  }
+  // Expire the sample so a timer wrap cannot make an old reading fresh again.
+  if (!measurement_fresh(&power, now)) power.valid = false;
+  energy_tick = now;
+}
 
 // Report only every REPORT_INTERVAL polls to avoid flooding
 #define REPORT_INTERVAL  10
@@ -57,45 +98,39 @@ extern uint16_t appResponseLength;
 static void on_measurement_rx(uint16_t cmd_id, uint8_t data_type,
                                const uint8_t *data, uint8_t data_len)
 {
-  // Log ALL commands for diagnostics (helps identify config/calibration data)
-  if (data_len >= 4) {
-    float val;
-    memcpy(&val, data, sizeof(float));
-    sl_zigbee_app_debug_println("RX cmd=0x%04X m=0x%02X len=%d "
-                                 "raw=%02X%02X%02X%02X val=%d.%02d",
-                                 cmd_id, data_type, data_len,
-                                 data[0], data[1], data[2], data[3],
-                                 (int)val,
-                                 (int)(fabsf(val * 100.0f)) % 100);
-  } else if (data_len >= 1) {
-    sl_zigbee_app_debug_println("RX cmd=0x%04X m=0x%02X len=%d val=0x%02X",
-                                 cmd_id, data_type, data_len, data[0]);
+  // Keep unknown fields visible without interpreting arbitrary bytes as floats.
+  if (data_len == 4) {
+    sl_zigbee_app_debug_println("RX cmd=0x%04X m=0x%02X raw=%02X%02X%02X%02X",
+                               cmd_id, data_type, data[0], data[1], data[2], data[3]);
   }
 
-  // Status entry (0x0000) in announce: byte[0] (LE) = gang count
-  if (cmd_id == CMD_STATUS && data_len >= 1) {
-    detected_gang_count = data[0];
-    sl_zigbee_app_debug_println("Detected %d gang(s)", detected_gang_count);
+  if (cmd_id == CMD_STATUS && data_type == 0x80 && data_len == 4) {
+    if (data[0] >= 1 && data[0] <= H2_SWITCH_GANG_COUNT) {
+      detected_gang_count = data[0];
+    }
   }
+  if (data_type != 0x55 || data_len != sizeof(float)) return;
 
-  if (data_type != 0x55 || data_len < 4) return;
-
-  float val;
-  memcpy(&val, data, sizeof(float));
-
+  measurement_t *measurement;
+  float max_value;
   switch (cmd_id) {
-    case CMD_VOLTAGE:
-      voltage_raw = val;
-      has_data = true;
-      break;
-    case CMD_CURRENT:
-      current_raw = val;
-      break;
-    case CMD_ENERGY:
-      energy_kwh = val;
-      break;
-    default:
-      break;
+#if H2_HAS_DIMMER
+    case CMD_VOLTAGE: measurement = &voltage; max_value = 1000.0f; break;
+#endif
+    case CMD_CURRENT: measurement = &current; max_value = 100000.0f; break;
+    case CMD_POWER:   measurement = &power;   max_value = 100000.0f; break;
+    default: return;
+  }
+
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  if (measurement == &power) accumulate_energy(now);
+  float value;
+  memcpy(&value, data, sizeof(value));
+  // Broad plausibility bounds, not load limits or calibration factors.
+  measurement->valid = isfinite(value) && value >= 0 && value <= max_value;
+  if (measurement->valid) {
+    measurement->value = value;
+    measurement->updated = now;
   }
 }
 
@@ -113,7 +148,7 @@ static void append_attr_float(uint16_t attr_id, float val)
   appResponseLength += 4;
 }
 
-static void report_measurements(float power_w)
+static void report_measurements(uint32_t now)
 {
   if (sl_zigbee_af_network_state() != SL_ZIGBEE_JOINED_NETWORK) return;
 
@@ -127,20 +162,19 @@ static void report_measurements(float power_w)
   appResponseData[appResponseLength++] = sl_zigbee_af_next_sequence();
   appResponseData[appResponseLength++] = ZCL_CMD_REPORT_ATTRIBUTES;
 
-  // energy (0x0095 / 149): kWh as float
-  append_attr_float(OPPLE_ATTR_ENERGY, energy_kwh);
+  if (energy_available) append_attr_float(OPPLE_ATTR_ENERGY, (float)energy_kwh);
 #if H2_HAS_DIMMER
-  // voltage (0x0096 / 150): KD-R01D Z2M does value * 0.01, so send volts * 100
-  append_attr_float(OPPLE_ATTR_VOLTAGE, voltage_raw * 100.0f);
-#else
-  // voltage (0x0096 / 150): Z2M does value * 0.1, so send volts * 10
-  append_attr_float(OPPLE_ATTR_VOLTAGE, voltage_raw * 10.0f);
+  if (measurement_fresh(&voltage, now)) {
+    append_attr_float(OPPLE_ATTR_VOLTAGE, voltage.value * 100.0f);
+  }
 #endif
-  // current (0x0097 / 151): Z2M does value * 0.001; current_raw is centamps
-  // centamps * 10 → Z2M divides by 1000 → amps
-  append_attr_float(OPPLE_ATTR_CURRENT, current_raw * 10.0f);
-  // power (0x0098 / 152): watts as-is
-  append_attr_float(OPPLE_ATTR_POWER, power_w);
+  if (measurement_fresh(&current, now)) {
+    append_attr_float(OPPLE_ATTR_CURRENT, current.value);
+  }
+  if (measurement_fresh(&power, now)) {
+    append_attr_float(OPPLE_ATTR_POWER, power.value);
+  }
+  if (appResponseLength == 5) return;
 
   sl_zigbee_aps_frame_t aps = {
     .profileId           = HA_PROFILE_ID,
@@ -157,12 +191,6 @@ static void report_measurements(float power_w)
                             &aps,
                             appResponseLength,
                             appResponseData);
-
-  sl_zigbee_app_debug_println("Report V=%d.%01d I=%d.%03d P=%d.%01d E=%d.%02d",
-                               (int)voltage_raw, ((int)(voltage_raw * 10.0f)) % 10,
-                               (int)current_raw, ((int)(current_raw * 1000.0f)) % 1000,
-                               (int)power_w, ((int)(power_w * 10.0f)) % 10,
-                               (int)energy_kwh, ((int)(energy_kwh * 100.0f)) % 100);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,16 +201,32 @@ static void power_poll_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
 
-  // Send measurement query to relay module
+  uint32_t now = sl_sleeptimer_get_tick_count();
+  accumulate_energy(now);
+#if H2_HAS_DIMMER
+  if (!measurement_fresh(&voltage, now)) voltage.valid = false;
+#endif
+  if (!measurement_fresh(&current, now)) current.valid = false;
+
+  if ((uint32_t)(now - save_tick)
+      >= sl_sleeptimer_get_timer_frequency() * ENERGY_SAVE_SECONDS) {
+    save_tick = now;
+    if (energy_dirty) {
+      // shortcut: lose up to five minutes on power failure; shorten this interval if needed.
+      Ecode_t err = nvm3_writeData(nvm3_defaultHandle, NVM3_KEY_ENERGY_KWH,
+                                  &energy_kwh, sizeof(energy_kwh));
+      if (err == ECODE_NVM3_OK) {
+        energy_dirty = false;
+      } else {
+        sl_zigbee_app_debug_println("Energy save failed: 0x%lX", (unsigned long)err);
+      }
+    }
+  }
+
   h2_relay_send_measurement_query(0);
-
-  if (has_data && ++report_counter >= REPORT_INTERVAL) {
+  if (++report_counter >= REPORT_INTERVAL) {
     report_counter = 0;
-
-    // current_raw is in centamps (0.01A units)
-    float power_w = voltage_raw * current_raw * 0.01f;
-
-    report_measurements(power_w);
+    report_measurements(now);
   }
 
   sl_zigbee_af_event_set_delay_ms(&power_poll_event, POWER_POLL_MS);
@@ -194,8 +238,20 @@ static void power_poll_handler(sl_zigbee_af_event_t *event)
 
 void h2_power_init(void)
 {
+  Ecode_t err = nvm3_readData(nvm3_defaultHandle, NVM3_KEY_ENERGY_KWH,
+                             &energy_kwh, sizeof(energy_kwh));
+  if (err == ECODE_NVM3_ERR_KEY_NOT_FOUND) energy_kwh = 0;
+  energy_available = (err == ECODE_NVM3_OK || err == ECODE_NVM3_ERR_KEY_NOT_FOUND)
+                     && isfinite(energy_kwh) && energy_kwh >= 0
+                     && energy_kwh <= 1.0e12;
+  if (!energy_available) {
+    sl_zigbee_app_debug_println("Energy storage unreadable: 0x%lX", (unsigned long)err);
+  }
+  energy_tick = save_tick = sl_sleeptimer_get_tick_count();
   h2_relay_set_rx_callback(on_measurement_rx);
   sl_zigbee_af_event_init(&power_poll_event, power_poll_handler);
+  // Meter even before joining Zigbee; reporting still requires a network.
+  h2_power_start();
 }
 
 uint8_t h2_power_get_detected_gangs(void)

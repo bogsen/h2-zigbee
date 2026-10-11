@@ -18,6 +18,7 @@ extern uint8_t h2_active_gang_count;
 #define RELAY_TYPE     0x8002
 #endif
 #define RELAY_CMD_SET  0x02
+#define RELAY_CMD_READ 0x01
 #define RELAY_CMD_QUERY 0x03
 
 static h2_relay_state_t relay_state[H2_SWITCH_GANG_COUNT];
@@ -296,7 +297,7 @@ void h2_relay_process_rx(void)
           break;
       }
 
-      if (off + 3 + data_size > payload_len) break;
+      if (data_size == 0 || data_size > 8 || off + 3 + data_size > payload_len) break;
 
       // Data is big-endian on wire — byte-reverse for ARM little-endian
       uint8_t data_le[8];
@@ -353,17 +354,16 @@ void h2_relay_send_init(void)
 
 void h2_relay_send_measurement_query(uint8_t gang)
 {
-  // Existing working format: [0x01, 0x0C, 0x55, 0x01, float(0.0)]
-  uint8_t payload[8];
-  payload[0] = 0x01;      // cmd_hi
-  payload[1] = 0x0C;      // cmd_lo: measurement attribute
-  payload[2] = 0x55;      // data_type marker
-  payload[3] = 0x01;      // rw_flag = read/query
-  payload[4] = 0x00;      // float(0.0) BE
-  payload[5] = 0x00;
-  payload[6] = 0x00;
-  payload[7] = 0x00;
-  relay_send_packet(RELAY_TYPE, RELAY_CMD_SET, payload, sizeof(payload));
+  (void)gang;  // Measurements are device-wide, not per output.
+  // Stock READ requests contain only [cmd_hi, cmd_lo, marker], no value.
+  const uint8_t payload[] = {
+#if H2_HAS_DIMMER
+    0x06, 0x00, 0x55,  // volts (not supported by the stock switch)
+#endif
+    0x06, 0x01, 0x55,  // milliamps
+    0x06, 0x02, 0x55,  // watts
+  };
+  relay_send_packet(RELAY_TYPE, RELAY_CMD_READ, payload, sizeof(payload));
 }
 
 // ---------------------------------------------------------------------------

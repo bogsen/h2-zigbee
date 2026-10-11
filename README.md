@@ -1,157 +1,143 @@
-# Aqara H2 Wall Switch — Custom Zigbee 3.0 Firmware
+# Aqara H2 Switch & Dimmer — Custom Zigbee Firmware
 
-Custom firmware for the Aqara H2 wall switch platform (EFR32MG24A410F1536IM48), replacing the stock Aqara firmware with a fully open Zigbee 3.0 implementation built on the Silicon Labs GSDK.
+Custom firmware for the Aqara H2 switch and dimmer (EFR32MG24A410F1536IM48), built with Silicon Labs Simplicity SDK 2025.6.2.
 
-## Project Goals
+## Features
 
-- Mains-powered Zigbee 3.0 **router** with mesh routing capability
-- **On/Off relay control** via Zigbee commands and local buttons
-- **Coupled mode** (default): buttons control local relay directly
-- **Decoupled mode**: buttons send On/Off/Level commands to bound lights, relay controlled independently via coordinator
-- **Dual-color LED feedback** (red + blue per button) with smooth PWM transitions
-- **Manufacturer-specific cluster 0xFCC0** (Aqara Opple) for configuration attributes compatible with Z2M
-- **OTA firmware updates**
-- Scalable from 1-gang to 2-gang by adding a second endpoint
+- Mains-powered Zigbee routers with OTA updates.
+- One- and two-gang switches, with gang count detected from the wall module at boot and a stored fallback.
+- Dimmer with local On/Off and Level Control, configurable brightness limits and phase mode.
+- Coupled mode (default) for local control; decoupled mode for controlling bound lights while the local output remains independently controllable over Zigbee.
+- Persistent configuration and power-on behavior: on, previous, off, or inverted. Both variants restore their outputs at startup without waiting for a network; reconnecting does not reapply the setting.
+- Red/blue LED feedback for local output or bound-light state.
+- Current, active power and accumulated energy reporting; voltage reporting on the dimmer. Device temperature comes from the MCU sensor, with a fixed correction, rather than a room-temperature sensor.
+- Aqara Opple configuration and action reports compatible with the existing Zigbee2MQTT converter; no custom converter is required. Compatibility has been checked through manual use, not a complete test of every stock setting.
 
-## Hardware
+The switch has two buttons and two bicolor LEDs per gang; the dimmer has a rotary push encoder and one bicolor LED. Both communicate with the secondary wall module over 115200-baud UART. Pin and timer assignments live in each variant's `h2_variant.h` and `config/` directory.
 
-- **MCU**: EFR32MG24A410F1536IM48 (Cortex-M33, 1536KB Flash, 256KB RAM)
-- **Relay**: Secondary power module controlled via UART (115200 baud, CRC-16/MODBUS framing)
-- **Buttons**: 2 per gang (up/down), active-low with debounce
-- **LEDs**: 2 per gang (up/down), each dual-color R+B controlled via TIMER PWM
-  - Top LED: TIMER0 CC0 (red, PD4) + CC1 (blue, PD5)
-  - Bottom LED: TIMER1 CC0 (red, PD2) + CC1 (blue, PD3)
-  - Active-low, 8-bit PWM resolution, ~2.4kHz
+## Controls
 
-## Endpoint Architecture
+### Switch
+
+In coupled mode, pressing down turns the corresponding relay on; pressing up turns it off. Local control works without a Zigbee network.
+
+In decoupled mode, button handling runs every 10 ms and starts dimming on press:
+
+| Event | Down | Up |
+|-------|------|----|
+| Press | Move brightness up, turning the light on | Move brightness down |
+| Quick tap (under 300 ms) | Move to full brightness with a 0.5 s transition | Move to off with a 0.5 s transition |
+| Hold | Continue moving | Continue moving |
+| Release after a hold | Stop | Stop |
+| Double press | Stop; the first tap may already have acted | Stop; the first tap may already have acted |
+
+### Dimmer
+
+| Input | Coupled | Decoupled |
+|-------|---------|-----------|
+| Short press without rotation | Toggle local output | Toggle bound lights between off and full brightness with a 0.5 s transition |
+| Rotate | Adjust local brightness within configured limits | Adjust bound-light brightness |
+| Hold and turn (after 200 ms) | No color-temperature action | Adjust bound-light color temperature |
+
+### Joining and factory reset
+
+Allow joining on the coordinator first. On an unjoined switch, a long press starts network steering. On an unjoined dimmer, hold the knob still for five seconds to start steering; a short press also starts it in decoupled mode.
+
+To factory-reset a switch, hold both buttons of the first physical pair for ten seconds (the right pair on two-gang hardware). On a joined dimmer, hold the knob without turning: the reset warning starts after five seconds, then keep holding for another ten seconds. Releasing or rotating cancels the dimmer reset. Factory reset clears saved settings, bindings and the accumulated energy total, leaves the network, and reboots.
+
+### LED feedback
+
+The normal indicator mode follows the local output in coupled mode and bound-light state in decoupled mode. Bound-light state is updated from reports, read after the network comes up, and updated optimistically after local commands. The Aqara indicator settings select behavior, swap the switch indicator position, and alter the red/blue color assignment.
+
+The driver uses PWM with smooth transitions. Arbitrary remote color/brightness control and time-of-day gradients are not implemented as user-facing features.
+
+## Endpoints and binding
 
 | Endpoint | Switch | Dimmer |
 |----------|--------|--------|
-| 1 | Local relay 1, configuration and telemetry | Local power output and level, configuration and telemetry |
-| 2 | Local relay 2 (two-gang hardware) | — |
-| 4 / 5 | Existing button action endpoints | Existing action endpoint 4 |
+| 1 | Local relay 1, configuration and telemetry | Local output and level, configuration and telemetry |
+| 2 | Local relay 2 on two-gang hardware | — |
+| 4 / 5 | Button action endpoints | Action endpoint 4 |
 | 11 | Bound-light control for gang 1 | Bound-light control for the knob |
 | 12 | Bound-light control for gang 2 | — |
 | 242 | Green Power proxy | Green Power proxy |
 
-Local output endpoints retain their On/Off server, the dimmer's Level Control
-server, Aqara configuration, and coordinator reporting. OTA remains on endpoint 1.
-Their On/Off and Level Control **client** clusters move to endpoints 11/12; the
-dimmer also moves its Color Control client to 11. Control endpoints include
-Identify and Groups for commissioning, but have no local output server.
+Local output endpoints have On/Off servers; the dimmer also has a Level Control server. OTA is on endpoint 1. On/Off and Level Control clients are on endpoints 11/12, with a Color Control client on dimmer endpoint 11. Control endpoints include Identify and Groups for commissioning.
 
-Decoupled commands and startup light-state queries originate from 11/12. Direct
-light reports and read responses must target the corresponding control endpoint.
-Group feedback is matched against that endpoint's control bindings. This keeps
-local output reports out of bulb-control bindings; it does not authenticate group
-report senders as bulbs.
+Bind lights to the **control endpoints (11/12)**. Decoupled commands and light-state queries originate there. Direct reports and read responses must target the corresponding control endpoint; group feedback is matched against that endpoint's bindings. This prevents local output reports from reaching bulb-control bindings, but does not authenticate group-report senders as bulbs.
 
-The stock Aqara model identifiers, output endpoints, settings, and action reports
-are preserved for the existing Zigbee2MQTT converter. Stock Zigbee2MQTT support
-has been verified through manual testing and daily use; no custom converter is required.
+Find-and-bind starts from endpoint 11 after joining; configure gang 2's bindings explicitly. Stock Aqara model identifiers and local output/action endpoints are retained for Zigbee2MQTT.
 
-Find-and-bind starts from endpoint 11; configure gang 2's bindings explicitly.
-Run `python3 tests/check_endpoints.py` to check the endpoint layout and feedback
-routing on the host without hardware.
+## Building
 
-## Button Behavior
+Use Simplicity Studio 6 with Simplicity SDK **2025.6.2**, the ARM GCC toolchain, CMake, Ninja and Simplicity Commander.
 
-### Coupled Mode (default)
-- **Down press** — Relay ON
-- **Up press** — Relay OFF
-- **Long press** — Same + reported to coordinator
-- Works even without network
+Import and generate the relevant `.slcp` project in Studio/SLC before building a fresh checkout. SDK files, generated configuration and CMake presets contain local paths and are not all tracked. Preserve the custom sources and OTA post-build commands in the tracked `cmake_gcc/CMakeLists.txt` when regenerating.
 
-### Decoupled Mode (Low-Latency Dimming)
-
-Light dimming starts immediately on button press (~10ms latency), before the press type is classified.
-
-| Event | Down (brighten) | Up (dim) |
-|-------|----------------|----------|
-| **Press** (immediate) | Move up slowly + turn on | Move down slowly |
-| **Quick tap** (<300ms) | Jump to max brightness | Jump to off |
-| **Long hold** (>300ms) | No-op (slow move continues) | No-op (slow move continues) |
-| **Release** (from hold) | Stop at current level | Stop at current level |
-| **Double press** | Stop (cancel) | Stop (cancel) |
-
-- Direct ZCL On/Off commands (to EP1) still control the local relay
-- LED follows bound light state (On/Off reports + optimistic updates)
-- LED syncs to bound light state on boot via Read Attributes
-
-### Commissioning
-- **Long press** (when not joined) — Start network steering
-
-## LED Modes
-
-Each button has an R+B dual-color LED. Color value 0=red, 100=blue.
-
-| Mode | Description |
-|------|-------------|
-| Follow Relay (default) | ON=on_color (red), OFF=off_color (blue) |
-| Follow Bound Light | Track On/Off reports from bound light |
-| Manual | Coordinator controls color + brightness directly |
-| Time Gradient | R-to-B interpolation based on time of day (planned) |
-
-## Current Status
-
-### Working
-- [x] Zigbee 3.0 router (joins network, routes traffic)
-- [x] On/Off cluster server — toggle from Z2M/ZHA
-- [x] Button state machine — press/single/double/long detection with immediate press event
-- [x] Coupled mode — buttons control relay + sync to On/Off cluster
-- [x] Decoupled mode — low-latency dimming via Move/Stop/MoveToLevel to bindings
-- [x] LED PWM driver — dual-color R+B with smooth transitions
-- [x] LED follow-relay mode — color changes on On/Off state
-- [x] Network steering — long press to join
-- [x] Find-and-bind initiator — auto-bind after joining
-- [x] Green Power proxy
-- [x] Attribute reporting (On/Off state)
-
-### In Progress / TODO
-- [x] UART relay protocol — CRC-16/MODBUS framing to secondary power module
-- [x] Manufacturer-specific cluster 0xFCC0 (Aqara Opple) — read/write attributes
-- [x] Decoupled mode — buttons send to bindings, relay via coordinator
-- [x] NVM-backed power-on behavior (on/previous/off/inverted)
-- [x] Button action/side reporting via genMultistateInput
-- [x] Factory reset (long press both buttons 10s)
-- [x] OTA firmware updates (LZMA-compressed, ~15 min as router, instant start on boot)
-- [x] LED follow-bound-light mode (decoupled: auto, coupled: follow relay)
-- [x] LED sync to bound light state on boot (Read Attributes)
-- [ ] LED time gradient mode
-- [ ] 2-gang support (add EP2)
-- [ ] No-neutral mode (maintain minimum current for MCU power)
-- [ ] Power/energy monitoring (electrical measurement cluster)
-- [ ] Temperature sensor (device temperature cluster)
-- [ ] Dimmer switch variant (level control server + TRIAC/PWM dimming)
-
-## Building & Flashing
-
-Requires [Simplicity Studio 6](https://www.silabs.com/developer-tools/simplicity-studio) with Simplicity SDK 2025.6.2.
-
-### Initial flashing via SWD
-
-For first-time programming (or to recover a locked device), use the [SWD flash tool](swd_flasher/) with any SWD probe (Pico with debugprobe, J-Link, ST-Link, etc.). This performs a DCI device erase to clear the debug lock, then programs the bootloader + application via the exposed 5-pin header on the back of the board.
-
-**Warning:** The DCI device erase permanently wipes the stock Aqara firmware. There is no way to recover it — the device will only run this custom firmware going forward.
+After generation, configure and build the selected project:
 
 ```bash
-cd swd_flasher
-./flash.sh
+cd h2_switch/cmake_gcc   # or h2_dimmer/cmake_gcc or bootloader/cmake_gcc
+cmake --preset project
+cmake --build --preset default_config
 ```
 
-### Subsequent updates via OTA
+For an already configured checkout, from the repository root:
 
-Once the firmware is running, updates can be pushed over-the-air via Zigbee OTA (LZMA-compressed, ~15 min as router). See `create_ota.sh` for building OTA images.
+```bash
+cmake --build h2_switch/cmake_gcc/build --config base
+cmake --build h2_dimmer/cmake_gcc/build --config base
+```
 
-## Files
+Application builds produce `.bin`, `.hex`, `.s37`, `.gbl` and `.ota` files in the selected project's `cmake_gcc/build/base/` directory. The [shared post-build script](common/create_ota.cmake) uses Commander to compress the GBL with LZMA and package the Zigbee OTA image. Set `POST_BUILD_EXE` to the Commander executable if it cannot be found automatically.
 
-| File | Purpose |
+Firmware versions come from `H2_FIRMWARE_VERSION` in each variant's `app.c`; follow [the version policy](AGENTS.md) when changing firmware. OTA images use manufacturer `0x115F`, image type `0xEDCF` for the switch and `0x7217` for the dimmer.
+
+## Flashing and updates
+
+### Initial SWD installation
+
+Use the [SWD flash tool and wiring instructions](swd_flasher/README.md). Disconnect the wall module before powering the logic board from a probe. Select the application explicitly; for example, from the repository root:
+
+```bash
+./swd_flasher/flash.sh \
+  --bootloader bootloader/cmake_gcc/build/base/bootloader.bin \
+  --application h2_dimmer/cmake_gcc/build/base/h2_dimmer.bin
+```
+
+For a switch, use `h2_switch/cmake_gcc/build/base/h2_switch.bin` instead. Build the [bootloader](bootloader/readme.md) first if its binary is unavailable.
+
+The tool attempts a full flash backup, asks for confirmation, then performs a **DCI device erase on both locked and unlocked devices** before programming and verifying. This erases the installed firmware and settings. A debug-locked device cannot be backed up through this procedure; a failed backup does not prevent the erase confirmation. Keep a verified stock dump if available; restoring stock firmware is not a validated workflow here.
+
+### OTA updates
+
+Once custom firmware and its bootloader are installed, serve the matching variant's `.ota` file through the coordinator's OTA service. The OTA client starts when the network comes up. Transfer duration depends on the network; there is no fixed completion time.
+
+## Validation and limitations
+
+Run the host checks from the repository root (Python 3 and a host C compiler are required):
+
+```bash
+python3 tests/check_endpoints.py
+python3 tests/check_power_on.py
+python3 tests/check_measurements.py
+```
+
+These check endpoint routing, startup restoration and measurement handling without hardware. Dimmer voltage/current/power readings have been reported as plausible in live use; calibrated accuracy, timed energy accumulation and switch telemetry still need hardware validation. Energy is checkpointed every five minutes, so an abrupt power loss can lose the unsaved interval.
+
+No-neutral power management and LED time gradients are not implemented. Host tests and successful builds do not replace hardware testing of each variant.
+
+## Source layout
+
+| Path | Purpose |
 |------|---------|
-| `app.c` | Main application — button dispatch, relay sync, LED mode, commissioning |
-| `h2_button.c/h` | Button state machine (press/single/double/long/release detection) |
-| `h2_led.c/h` | LED PWM driver with smooth color transitions |
-| `h2_led_config.h` | LED pin and timer assignments |
-| `h2_opple.c/h` | Aqara Opple cluster 0xFCC0 — config attributes, NVM storage, LED control |
-| `h2_relay.c/h` | Relay control via UART to secondary power module |
-| `config/zcl/zcl_config.zap` | ZCL cluster/endpoint configuration |
-| `h2_switch.slcp` | Project component and configuration |
+| `h2_switch/app.c`, `h2_dimmer/app.c` | Variant controls, startup, commissioning and Zigbee callbacks |
+| `h2_switch/h2_variant.h`, `h2_dimmer/h2_variant.h` | Variant capabilities and hardware assignments |
+| `common/h2_button.*`, `common/h2_encoder.*` | Button and rotary encoder handling |
+| `common/h2_led.*` | LED PWM and feedback |
+| `common/h2_opple.*` | Aqara configuration, action reporting and persistence |
+| `common/h2_relay.*` | Wall-module UART protocol and output control |
+| `common/h2_power.*`, `common/h2_temperature.*` | Telemetry |
+| `h2_switch/config/zcl/`, `h2_dimmer/config/zcl/` | Endpoint and cluster definitions |
+| `h2_switch/h2_switch.slcp`, `h2_dimmer/h2_dimmer.slcp` | SDK project definitions |
+| `bootloader/`, `swd_flasher/`, `tests/` | Bootloader, initial installation and host checks |

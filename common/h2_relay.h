@@ -11,10 +11,10 @@ typedef enum {
 } h2_relay_state_t;
 
 // RX callback: called from main loop with parsed command entry fields
-// cmd_id: combined command (e.g. 0x0504=power, 0x0601=voltage)
+// cmd_id: combined command (0x0600=voltage on dimmer, 0x0601=mA, 0x0602=W)
 // data_type: entry data type (0x55=float/value)
-// data: pointer to 8 data bytes (float at offset 0)
-// data_len: always 8
+// data: little-endian value, valid for the duration of the callback
+// data_len: actual value length (1 or 4 for supported command groups)
 typedef void (*h2_relay_rx_callback_t)(uint16_t cmd_id, uint8_t data_type,
                                        const uint8_t *data, uint8_t data_len);
 
@@ -39,7 +39,7 @@ void h2_relay_process_rx(void);
 // Send init handshake to relay module (status + relay state queries)
 void h2_relay_send_init(void);
 
-// Send measurement query for a gang (0-indexed)
+// Read device-wide measurements (gang is retained for existing callers).
 void h2_relay_send_measurement_query(uint8_t gang);
 
 #if H2_HAS_DIMMER
