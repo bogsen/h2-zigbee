@@ -604,10 +604,8 @@ void h2_opple_apply_power_on_behavior(uint8_t gang)
     default: target_on = false; break;
   }
 
-#if H2_HAS_RELAY
+#if H2_HAS_RELAY || H2_HAS_DIMMER
   h2_relay_set(gang, target_on ? H2_RELAY_ON : H2_RELAY_OFF);
-#else
-  (void)target_on; // dimmer handles power-on in app.c
 #endif
 }
 

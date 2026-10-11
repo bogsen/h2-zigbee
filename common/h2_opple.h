@@ -61,7 +61,7 @@ uint8_t h2_opple_get_op_mode(uint8_t gang);
 void h2_opple_save_relay_state(uint8_t gang, bool relay_on);
 
 // Apply startup relay state per power_on_behavior + saved previous state.
-// Call on NETWORK_UP.
+// Call after hardware/config initialization, then publish the resulting state.
 void h2_opple_apply_power_on_behavior(uint8_t gang);
 
 // Re-apply LED settings from current opple config for all gangs.

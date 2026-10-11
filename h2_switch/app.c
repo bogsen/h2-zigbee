@@ -26,10 +26,10 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x0000006c  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x0000006f  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0xEDCF      // unique per product variant
 
-#define SWITCH_ENDPOINT           1
+#define CONTROL_ENDPOINT          11
 #define BUTTON_TICK_MS            10
 #define LED_TICK_MS               20
 #define FINDING_AND_BINDING_DELAY_MS 3000
@@ -44,12 +44,97 @@ uint8_t h2_active_gang_count = 1;
 // Per-gang runtime state
 typedef struct {
   uint8_t endpoint;
+  uint8_t control_endpoint;
 } gang_state_t;
 
 static gang_state_t gangs[2] = {
-  { .endpoint = 1 },
-  { .endpoint = 2 },
+  { .endpoint = 1, .control_endpoint = CONTROL_ENDPOINT },
+  { .endpoint = 2, .control_endpoint = CONTROL_ENDPOINT + 1 },
 };
+
+//--------------------------------------------------
+// Bound-light report routing
+
+static uint16_t binding_group_id(const sl_zigbee_binding_table_entry_t *entry)
+{
+  return (uint16_t)entry->identifier[0]
+         | ((uint16_t)entry->identifier[1] << 8);
+}
+
+static bool has_matching_multicast_binding(uint8_t local_ep,
+                                           sl_zigbee_af_cluster_id_t cluster_id,
+                                           uint16_t group_id)
+{
+  uint8_t table_size = sl_zigbee_get_binding_table_size();
+  for (uint8_t i = 0; i < table_size; i++) {
+    sl_zigbee_binding_table_entry_t entry;
+    if (sl_zigbee_get_binding(i, &entry) != SL_STATUS_OK) {
+      continue;
+    }
+    if (entry.type != SL_ZIGBEE_MULTICAST_BINDING
+        || entry.local != local_ep
+        || entry.clusterId != cluster_id) {
+      continue;
+    }
+    if (binding_group_id(&entry) == group_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool report_applies_to_endpoint(const sl_zigbee_af_cluster_command_t *cmd,
+                                       uint8_t local_ep,
+                                       sl_zigbee_af_cluster_id_t cluster_id)
+{
+  if (cmd == NULL || cmd->apsFrame == NULL) {
+    return false;
+  }
+  uint8_t dst_ep = cmd->apsFrame->destinationEndpoint;
+  if (dst_ep == local_ep) {
+    return true;
+  }
+  if (dst_ep == 0xFF) {
+    return has_matching_multicast_binding(local_ep, cluster_id,
+                                          cmd->apsFrame->groupId);
+  }
+  return false;
+}
+
+static bool parse_report_attribute_u8(const uint8_t *message,
+                                      uint16_t msg_len,
+                                      sl_zigbee_af_attribute_id_t expected_attr_id,
+                                      uint8_t *value)
+{
+  if (message == NULL || value == NULL || msg_len < 3) {
+    return false;
+  }
+
+  uint8_t frame_control = message[0];
+  if ((frame_control & ZCL_FRAME_CONTROL_FRAME_TYPE_MASK) != ZCL_GLOBAL_COMMAND) {
+    return false;
+  }
+
+  uint16_t sequence_index = 1;
+  if ((frame_control & ZCL_MANUFACTURER_SPECIFIC_MASK) != 0) {
+    sequence_index += 2;
+  }
+  uint16_t command_index = sequence_index + 1;
+  uint16_t payload_index = command_index + 1;
+  if (payload_index + 4 > msg_len
+      || message[command_index] != ZCL_REPORT_ATTRIBUTES_COMMAND_ID) {
+    return false;
+  }
+
+  uint16_t attr_id = message[payload_index]
+                     | ((uint16_t)message[payload_index + 1] << 8);
+  if (attr_id != expected_attr_id) {
+    return false;
+  }
+
+  *value = message[payload_index + 3];
+  return true;
+}
 
 static bool commissioning = false;
 
@@ -196,7 +281,7 @@ static void send_cmd(uint8_t ep)
 
 static void handle_decoupled(uint8_t gang, h2_button_side_t side, h2_button_action_t action)
 {
-  uint8_t ep = gangs[gang].endpoint;
+  uint8_t ep = gangs[gang].control_endpoint;
 
   switch (action) {
     case H2_BTN_ACTION_PRESS:
@@ -398,7 +483,7 @@ static void factory_reset_event_handler(sl_zigbee_af_event_t *event)
 static void finding_and_binding_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
-  sl_status_t status = sl_zigbee_af_find_and_bind_initiator_start(SWITCH_ENDPOINT);
+  sl_status_t status = sl_zigbee_af_find_and_bind_initiator_start(CONTROL_ENDPOINT);
   sl_zigbee_app_debug_println("Find and bind initiator start: 0x%02X", status);
 }
 
@@ -454,7 +539,8 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
   (void)size;
 
   if (clusterId != ZCL_ON_OFF_CLUSTER_ID
-      || attributeId != ZCL_ON_OFF_ATTRIBUTE_ID) {
+      || attributeId != ZCL_ON_OFF_ATTRIBUTE_ID
+      || mask != CLUSTER_MASK_SERVER) {
     return;
   }
 
@@ -463,17 +549,10 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
   // Find which gang this endpoint belongs to
   for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     if (gangs[g].endpoint == endpoint) {
-      if (mask == CLUSTER_MASK_SERVER) {
-        // Server-side: command from coordinator or local toggle → control relay
-        h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
-        h2_led_update_relay_state(g, on_off_val != 0);
-        h2_opple_save_relay_state(g, on_off_val != 0);
-        sl_zigbee_app_debug_println("Relay %d: %s", g, on_off_val ? "ON" : "OFF");
-      } else {
-        // Client-side: attribute report from bound light → update LED only
-        h2_led_update_light_state(g, on_off_val != 0);
-        sl_zigbee_app_debug_println("Light %d: %s", g, on_off_val ? "ON" : "OFF");
-      }
+      h2_relay_set(g, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
+      h2_led_update_relay_state(g, on_off_val != 0);
+      h2_opple_save_relay_state(g, on_off_val != 0);
+      sl_zigbee_app_debug_println("Relay %d: %s", g, on_off_val ? "ON" : "OFF");
       break;
     }
   }
@@ -496,30 +575,43 @@ bool sl_zigbee_af_report_attributes_cb(sl_zigbee_af_cluster_id_t clusterId,
   uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
 
   const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
-  if (cmd == NULL) {
+  if (cmd == NULL || cmd->apsFrame == NULL) {
     return false;
   }
-  uint8_t endpoint = cmd->apsFrame->destinationEndpoint;
 
   if (clusterId == ZCL_ON_OFF_CLUSTER_ID
       && attr_id == ZCL_ON_OFF_ATTRIBUTE_ID) {
     uint8_t on_off_val = buffer[3];
     for (uint8_t g = 0; g < h2_active_gang_count; g++) {
-      if (gangs[g].endpoint == endpoint) {
+      uint8_t endpoint = gangs[g].control_endpoint;
+      if (report_applies_to_endpoint(cmd, endpoint, clusterId)) {
         h2_led_update_light_state(g, on_off_val != 0);
-        sl_zigbee_app_debug_println("Light report EP%d: %s", endpoint,
-                                     on_off_val ? "ON" : "OFF");
-        break;
+        if (cmd->apsFrame->destinationEndpoint == 0xFF) {
+          sl_zigbee_app_debug_println("Light report EP%d group 0x%04X: %s",
+                                       endpoint,
+                                       cmd->apsFrame->groupId,
+                                       on_off_val ? "ON" : "OFF");
+        } else {
+          sl_zigbee_app_debug_println("Light report EP%d: %s", endpoint,
+                                       on_off_val ? "ON" : "OFF");
+        }
       }
     }
   } else if (clusterId == ZCL_LEVEL_CONTROL_CLUSTER_ID
              && attr_id == ZCL_CURRENT_LEVEL_ATTRIBUTE_ID) {
     uint8_t level = buffer[3];
     for (uint8_t g = 0; g < h2_active_gang_count; g++) {
-      if (gangs[g].endpoint == endpoint) {
+      uint8_t endpoint = gangs[g].control_endpoint;
+      if (report_applies_to_endpoint(cmd, endpoint, clusterId)) {
         h2_led_update_light_level(g, level);
-        sl_zigbee_app_debug_println("Level report EP%d: %d", endpoint, level);
-        break;
+        if (cmd->apsFrame->destinationEndpoint == 0xFF) {
+          sl_zigbee_app_debug_println("Level report EP%d group 0x%04X: %d",
+                                       endpoint,
+                                       cmd->apsFrame->groupId,
+                                       level);
+        } else {
+          sl_zigbee_app_debug_println("Level report EP%d: %d", endpoint, level);
+        }
       }
     }
   }
@@ -546,7 +638,7 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
   }
 
   const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
-  if (cmd == NULL) {
+  if (cmd == NULL || cmd->apsFrame == NULL) {
     return false;
   }
   uint8_t endpoint = cmd->apsFrame->destinationEndpoint;
@@ -555,7 +647,7 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
       && attr_id == ZCL_ON_OFF_ATTRIBUTE_ID) {
     uint8_t on_off_val = buffer[4];
     for (uint8_t g = 0; g < h2_active_gang_count; g++) {
-      if (gangs[g].endpoint == endpoint) {
+      if (gangs[g].control_endpoint == endpoint) {
         h2_led_update_light_state(g, on_off_val != 0);
         sl_zigbee_app_debug_println("Light sync EP%d: %s", endpoint,
                                      on_off_val ? "ON" : "OFF");
@@ -566,7 +658,7 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
              && attr_id == ZCL_CURRENT_LEVEL_ATTRIBUTE_ID) {
     uint8_t level = buffer[4];
     for (uint8_t g = 0; g < h2_active_gang_count; g++) {
-      if (gangs[g].endpoint == endpoint) {
+      if (gangs[g].control_endpoint == endpoint) {
         h2_led_update_light_level(g, level);
         sl_zigbee_app_debug_println("Level sync EP%d: %d", endpoint, level);
         break;
@@ -585,7 +677,7 @@ static void light_sync_handler(sl_zigbee_af_event_t *event)
   (void)event;
   for (uint8_t g = 0; g < h2_active_gang_count; g++) {
     if (h2_opple_get_op_mode(g) != OPPLE_OP_MODE_CONTROL_RELAY) {
-      uint8_t ep = gangs[g].endpoint;
+      uint8_t ep = gangs[g].control_endpoint;
       uint8_t attr_ids[] = {
         LOW_BYTE(ZCL_ON_OFF_ATTRIBUTE_ID),
         HIGH_BYTE(ZCL_ON_OFF_ATTRIBUTE_ID)
@@ -748,15 +840,78 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
     return true;  // consume self-loopback (commands and reports)
   }
 
-  // In decoupled mode, consume On/Off cluster-specific commands sent to ep 0xFF.
-  // These arrive from binding-based sync (coordinator or bound lights) and must
-  // not toggle the relay. Direct commands to a specific EP (e.g. EP1) pass through.
+  // Route group feedback using control bindings before framework endpoint dispatch.
+  if (msg->apsFrame->destinationEndpoint == 0xFF) {
+    if (msg->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID) {
+      uint8_t on_off_val;
+      if (parse_report_attribute_u8(msg->message,
+                                    msg->msgLen,
+                                    ZCL_ON_OFF_ATTRIBUTE_ID,
+                                    &on_off_val)) {
+        bool matched = false;
+        for (uint8_t g = 0; g < h2_active_gang_count; g++) {
+          uint8_t endpoint = gangs[g].control_endpoint;
+          if (has_matching_multicast_binding(endpoint,
+                                             ZCL_ON_OFF_CLUSTER_ID,
+                                             msg->apsFrame->groupId)) {
+            h2_led_update_light_state(g, on_off_val != 0);
+            sl_zigbee_app_debug_println("Light report EP%d group 0x%04X raw: %s",
+                                         endpoint,
+                                         msg->apsFrame->groupId,
+                                         on_off_val ? "ON" : "OFF");
+            matched = true;
+          }
+        }
+        if (!matched) {
+          sl_zigbee_app_debug_println("Ignored light report group 0x%04X",
+                                       msg->apsFrame->groupId);
+        }
+        return true;
+      }
+    } else if (msg->apsFrame->clusterId == ZCL_LEVEL_CONTROL_CLUSTER_ID) {
+      uint8_t level;
+      if (parse_report_attribute_u8(msg->message,
+                                    msg->msgLen,
+                                    ZCL_CURRENT_LEVEL_ATTRIBUTE_ID,
+                                    &level)) {
+        bool matched = false;
+        for (uint8_t g = 0; g < h2_active_gang_count; g++) {
+          uint8_t endpoint = gangs[g].control_endpoint;
+          if (has_matching_multicast_binding(endpoint,
+                                             ZCL_LEVEL_CONTROL_CLUSTER_ID,
+                                             msg->apsFrame->groupId)) {
+            h2_led_update_light_level(g, level);
+            sl_zigbee_app_debug_println("Level report EP%d group 0x%04X raw: %d",
+                                         endpoint,
+                                         msg->apsFrame->groupId,
+                                         level);
+            matched = true;
+          }
+        }
+        if (!matched) {
+          sl_zigbee_app_debug_println("Ignored level report group 0x%04X",
+                                       msg->apsFrame->groupId);
+        }
+        return true;
+      }
+    }
+  }
+
+  // Consume group control in decoupled mode, updating only matching gangs.
   if (msg->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID
       && msg->apsFrame->destinationEndpoint == 0xFF
       && msg->msgLen >= 3
       && (msg->message[0] & 0x03) == 0x01) {  // cluster-specific frame type
+    bool decoupled = false;
     for (uint8_t g = 0; g < h2_active_gang_count; g++) {
-      if (h2_opple_get_op_mode(g) != OPPLE_OP_MODE_CONTROL_RELAY) {
+      bool gang_decoupled = h2_opple_get_op_mode(g) != OPPLE_OP_MODE_CONTROL_RELAY;
+      decoupled |= gang_decoupled;
+      if ((msg->message[0] & (ZCL_MANUFACTURER_SPECIFIC_MASK
+                             | ZCL_FRAME_CONTROL_SERVER_TO_CLIENT)) == 0
+          && gang_decoupled
+          && has_matching_multicast_binding(gangs[g].control_endpoint,
+                                             ZCL_ON_OFF_CLUSTER_ID,
+                                             msg->apsFrame->groupId)) {
         // Update light state from the command for immediate LED feedback
         uint8_t cmd_id = msg->message[2];
         if (cmd_id == 0x01) {       // On
@@ -764,9 +919,9 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
         } else if (cmd_id == 0x00) { // Off
           h2_led_update_light_state(g, false);
         }
-        return true;  // consume — don't let framework toggle relay
       }
     }
+    return decoupled;  // preserve group relay control when all gangs are coupled
   }
 
   return false;

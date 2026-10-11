@@ -23,28 +23,36 @@ Custom firmware for the Aqara H2 wall switch platform (EFR32MG24A410F1536IM48), 
   - Bottom LED: TIMER1 CC0 (red, PD2) + CC1 (blue, PD3)
   - Active-low, 8-bit PWM resolution, ~2.4kHz
 
-## Endpoint Architecture (1-Gang)
+## Endpoint Architecture
 
-| Endpoint | Device Type | Purpose |
-|----------|-------------|---------|
-| 1 | HA On/Off Output (0x0002) | Relay + button config + LED config |
-| 242 | Green Power Proxy (0x0061) | Required for Zigbee 3.0 routers |
+| Endpoint | Switch | Dimmer |
+|----------|--------|--------|
+| 1 | Local relay 1, configuration and telemetry | Local power output and level, configuration and telemetry |
+| 2 | Local relay 2 (two-gang hardware) | — |
+| 4 / 5 | Existing button action endpoints | Existing action endpoint 4 |
+| 11 | Bound-light control for gang 1 | Bound-light control for the knob |
+| 12 | Bound-light control for gang 2 | — |
+| 242 | Green Power proxy | Green Power proxy |
 
-### EP1 Server Clusters
+Local output endpoints retain their On/Off server, the dimmer's Level Control
+server, Aqara configuration, and coordinator reporting. OTA remains on endpoint 1.
+Their On/Off and Level Control **client** clusters move to endpoints 11/12; the
+dimmer also moves its Color Control client to 11. Control endpoints include
+Identify and Groups for commissioning, but have no local output server.
 
-- **Basic** (0x0000) — Device identification
-- **Identify** (0x0003) — LED blink on identify
-- **Groups** (0x0004) — Group membership
-- **Scenes** (0x0005) — Scene recall
-- **On/Off** (0x0006) — Relay state with StartUpOnOff
+Decoupled commands and startup light-state queries originate from 11/12. Direct
+light reports and read responses must target the corresponding control endpoint.
+Group feedback is matched against that endpoint's control bindings. This keeps
+local output reports out of bulb-control bindings; it does not authenticate group
+report senders as bulbs.
 
-### EP1 Client Clusters
+The stock Aqara model identifiers, output endpoints, settings, and action reports
+are preserved for the existing Zigbee2MQTT converter. Stock Zigbee2MQTT support
+has been verified through manual testing and daily use; no custom converter is required.
 
-- **On/Off** (0x0006) — Send to bound lights (decoupled mode)
-- **Level Control** (0x0008) — Brightness control to bound lights
-- **Identify** (0x0003) — Find-and-bind initiator
-- **Groups** (0x0004) — Group management on targets
-- **OTA Upgrade** (0x0019) — Firmware updates
+Find-and-bind starts from endpoint 11; configure gang 2's bindings explicitly.
+Run `python3 tests/check_endpoints.py` to check the endpoint layout and feedback
+routing on the host without hardware.
 
 ## Button Behavior
 

@@ -26,10 +26,11 @@
 #include "em_gpio.h"
 #include "pin_config.h"
 
-#define H2_FIRMWARE_VERSION  0x0000001a  // increment for each OTA release
+#define H2_FIRMWARE_VERSION  0x00000022  // increment for each OTA release
 #define H2_IMAGE_TYPE_ID     0x7217      // unique for dimmer variant
 
 #define DIMMER_ENDPOINT           1
+#define CONTROL_ENDPOINT          11
 #define ENCODER_TICK_MS           1
 #define LED_TICK_MS               20
 #define FINDING_AND_BINDING_DELAY_MS 3000
@@ -86,6 +87,91 @@ static sl_zigbee_af_event_t finding_and_binding_event;
 static sl_zigbee_af_event_t commissioning_event;
 static sl_zigbee_af_event_t factory_reset_event;
 static sl_zigbee_af_event_t light_sync_event;
+static sl_zigbee_af_event_t power_on_event;
+
+//--------------------------------------------------
+// Bound-light report routing
+
+static uint16_t binding_group_id(const sl_zigbee_binding_table_entry_t *entry)
+{
+  return (uint16_t)entry->identifier[0]
+         | ((uint16_t)entry->identifier[1] << 8);
+}
+
+static bool has_matching_multicast_binding(uint8_t local_ep,
+                                           sl_zigbee_af_cluster_id_t cluster_id,
+                                           uint16_t group_id)
+{
+  uint8_t table_size = sl_zigbee_get_binding_table_size();
+  for (uint8_t i = 0; i < table_size; i++) {
+    sl_zigbee_binding_table_entry_t entry;
+    if (sl_zigbee_get_binding(i, &entry) != SL_STATUS_OK) {
+      continue;
+    }
+    if (entry.type != SL_ZIGBEE_MULTICAST_BINDING
+        || entry.local != local_ep
+        || entry.clusterId != cluster_id) {
+      continue;
+    }
+    if (binding_group_id(&entry) == group_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool report_applies_to_endpoint(const sl_zigbee_af_cluster_command_t *cmd,
+                                       uint8_t local_ep,
+                                       sl_zigbee_af_cluster_id_t cluster_id)
+{
+  if (cmd == NULL || cmd->apsFrame == NULL) {
+    return false;
+  }
+  uint8_t dst_ep = cmd->apsFrame->destinationEndpoint;
+  if (dst_ep == local_ep) {
+    return true;
+  }
+  if (dst_ep == 0xFF) {
+    return has_matching_multicast_binding(local_ep, cluster_id,
+                                          cmd->apsFrame->groupId);
+  }
+  return false;
+}
+
+static bool parse_report_attribute_u8(const uint8_t *message,
+                                      uint16_t msg_len,
+                                      sl_zigbee_af_attribute_id_t expected_attr_id,
+                                      uint8_t *value)
+{
+  if (message == NULL || value == NULL || msg_len < 3) {
+    return false;
+  }
+
+  uint8_t frame_control = message[0];
+  if ((frame_control & ZCL_FRAME_CONTROL_FRAME_TYPE_MASK) != ZCL_GLOBAL_COMMAND) {
+    return false;
+  }
+
+  uint16_t sequence_index = 1;
+  if ((frame_control & ZCL_MANUFACTURER_SPECIFIC_MASK) != 0) {
+    sequence_index += 2;
+  }
+  uint16_t command_index = sequence_index + 1;
+  uint16_t payload_index = command_index + 1;
+  if (payload_index + 4 > msg_len
+      || message[command_index] != ZCL_REPORT_ATTRIBUTES_COMMAND_ID) {
+    return false;
+  }
+
+  uint16_t attr_id = message[payload_index]
+                     | ((uint16_t)message[payload_index + 1] << 8);
+  if (attr_id != expected_attr_id) {
+    return false;
+  }
+
+  *value = message[payload_index + 3];
+  return true;
+}
 
 // Forward declarations
 static void encoder_tick_handler(sl_zigbee_af_event_t *event);
@@ -154,26 +240,12 @@ static void send_to_bindings(void)
 
 static void send_cmd(void)
 {
-  sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = DIMMER_ENDPOINT;
+  sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = CONTROL_ENDPOINT;
   send_to_bindings();
 }
 
 //--------------------------------------------------
 // Local dimmer control (via UART to co-processor)
-
-static void sync_dimmer_to_cluster(void)
-{
-  uint8_t on_off_val = 0;
-  sl_zigbee_af_read_server_attribute(DIMMER_ENDPOINT,
-    ZCL_ON_OFF_CLUSTER_ID, ZCL_ON_OFF_ATTRIBUTE_ID,
-    &on_off_val, sizeof(on_off_val));
-  h2_relay_set(0, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
-  h2_led_update_relay_state(0, on_off_val != 0);
-  h2_opple_save_relay_state(0, on_off_val != 0);
-}
-
-//--------------------------------------------------
-// Coupled mode handlers (direct local dimmer control)
 
 // Guard to prevent post_attribute_change_cb from re-sending UART commands
 // when coupled mode code already handled the relay
@@ -202,6 +274,29 @@ static void sync_relay_to_cluster(void)
   h2_led_update_relay_state(0, state == H2_RELAY_ON);
   h2_opple_save_relay_state(0, state == H2_RELAY_ON);
 }
+
+static void power_on_handler(sl_zigbee_af_event_t *event)
+{
+  sl_zigbee_af_event_set_inactive(event);
+  uint8_t level = 254;
+  sl_zigbee_af_read_server_attribute(DIMMER_ENDPOINT,
+    ZCL_LEVEL_CONTROL_CLUSTER_ID, ZCL_CURRENT_LEVEL_ATTRIBUTE_ID,
+    &level, sizeof(level));
+  if (level < 1 || level > 254) level = 254;
+  level = clamp_to_brightness_range(level);
+  h2_relay_set_level(0, level);
+  h2_opple_apply_power_on_behavior(0);
+
+  coupled_updating = true;
+  sl_zigbee_af_write_server_attribute(DIMMER_ENDPOINT,
+    ZCL_LEVEL_CONTROL_CLUSTER_ID, ZCL_CURRENT_LEVEL_ATTRIBUTE_ID,
+    &level, ZCL_INT8U_ATTRIBUTE_TYPE);
+  coupled_updating = false;
+  sync_relay_to_cluster();
+}
+
+//--------------------------------------------------
+// Coupled mode handlers (direct local dimmer control)
 
 static void handle_coupled_toggle(void)
 {
@@ -495,16 +590,17 @@ static void on_encoder_action(h2_encoder_action_t action, int8_t delta,
           // Light is on → fade off
           sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(0, 5);
           send_cmd();
+          sl_zigbee_af_fill_command_on_off_cluster_off();
+          send_cmd();
           h2_led_update_light_state(0, false);
         } else {
           // Light is off → fade to full brightness
           sl_zigbee_af_fill_command_level_control_cluster_move_to_level_with_on_off(254, 5);
           send_cmd();
+          sl_zigbee_af_fill_command_on_off_cluster_on();
+          send_cmd();
           h2_led_update_light_state(0, true);
         }
-        // Also send On/Off Toggle for non-dimmable lights bound via On/Off cluster
-        sl_zigbee_af_fill_command_on_off_cluster_toggle();
-        send_cmd();
         h2_opple_report_action(DIMMER_ENDPOINT, 1);
       } else {
         // Not joined — start commissioning
@@ -630,7 +726,7 @@ static void factory_reset_event_handler(sl_zigbee_af_event_t *event)
 static void finding_and_binding_handler(sl_zigbee_af_event_t *event)
 {
   (void)event;
-  sl_status_t status = sl_zigbee_af_find_and_bind_initiator_start(DIMMER_ENDPOINT);
+  sl_status_t status = sl_zigbee_af_find_and_bind_initiator_start(CONTROL_ENDPOINT);
   sl_zigbee_app_debug_println("Find and bind initiator start: 0x%02X", status);
 }
 
@@ -676,30 +772,23 @@ void sl_zigbee_af_post_attribute_change_cb(uint8_t endpoint,
 {
   (void)manufacturerCode; (void)type; (void)size;
 
-  if (endpoint != DIMMER_ENDPOINT) return;
+  if (endpoint != DIMMER_ENDPOINT || mask != CLUSTER_MASK_SERVER) return;
 
   if (clusterId == ZCL_ON_OFF_CLUSTER_ID
       && attributeId == ZCL_ON_OFF_ATTRIBUTE_ID) {
     uint8_t on_off_val = *value;
-    if (mask == CLUSTER_MASK_SERVER) {
-      // Server-side: command from coordinator or coupled mode → control local dimmer
-      if (!coupled_updating) {
-        h2_relay_set(0, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
-        h2_led_update_relay_state(0, on_off_val != 0);
-        h2_opple_save_relay_state(0, on_off_val != 0);
-      }
-      sl_zigbee_app_debug_println("Dimmer: %s", on_off_val ? "ON" : "OFF");
-    } else {
-      // Client-side: report from bound light → update LED only
-      h2_led_update_light_state(0, on_off_val != 0);
-      sl_zigbee_app_debug_println("Light: %s", on_off_val ? "ON" : "OFF");
+    // Coupled mode already applied its change to the local output.
+    if (!coupled_updating) {
+      h2_relay_set(0, on_off_val ? H2_RELAY_ON : H2_RELAY_OFF);
+      h2_led_update_relay_state(0, on_off_val != 0);
+      h2_opple_save_relay_state(0, on_off_val != 0);
     }
+    sl_zigbee_app_debug_println("Dimmer: %s", on_off_val ? "ON" : "OFF");
   }
 
   // Level Control — forward attribute writes (from Z2M) to UART
   if (clusterId == ZCL_LEVEL_CONTROL_CLUSTER_ID
       && attributeId == ZCL_CURRENT_LEVEL_ATTRIBUTE_ID
-      && mask == CLUSTER_MASK_SERVER
       && !coupled_updating) {
     uint8_t level = *value;
     if (level > 0) {
@@ -728,9 +817,24 @@ bool sl_zigbee_af_report_attributes_cb(sl_zigbee_af_cluster_id_t clusterId,
   uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
   if (attr_id != ZCL_ON_OFF_ATTRIBUTE_ID) return false;
 
+  const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
+  if (!report_applies_to_endpoint(cmd, CONTROL_ENDPOINT, clusterId)) {
+    return false;
+  }
+
   uint8_t on_off_val = buffer[3];
   h2_led_update_light_state(0, on_off_val != 0);
-  sl_zigbee_app_debug_println("Light report: %s", on_off_val ? "ON" : "OFF");
+
+  if (cmd->apsFrame->destinationEndpoint == 0xFF) {
+    sl_zigbee_app_debug_println("Light report EP%d group 0x%04X: %s",
+                                 CONTROL_ENDPOINT,
+                                 cmd->apsFrame->groupId,
+                                 on_off_val ? "ON" : "OFF");
+  } else {
+    sl_zigbee_app_debug_println("Light report EP%d: %s",
+                                 DIMMER_ENDPOINT,
+                                 on_off_val ? "ON" : "OFF");
+  }
 
   return false;
 }
@@ -747,9 +851,19 @@ bool sl_zigbee_af_read_attributes_response_cb(sl_zigbee_af_cluster_id_t clusterI
   uint16_t attr_id = buffer[0] | ((uint16_t)buffer[1] << 8);
   if (attr_id != ZCL_ON_OFF_ATTRIBUTE_ID || buffer[2] != 0) return false;
 
+  const sl_zigbee_af_cluster_command_t *cmd = sl_zigbee_af_current_command();
+  if (cmd == NULL
+      || cmd->apsFrame == NULL
+      || cmd->apsFrame->destinationEndpoint != CONTROL_ENDPOINT) {
+    return false;
+  }
+
   uint8_t on_off_val = buffer[4];
   h2_led_update_light_state(0, on_off_val != 0);
-  sl_zigbee_app_debug_println("Light sync: %s", on_off_val ? "ON" : "OFF");
+
+  sl_zigbee_app_debug_println("Light sync EP%d: %s",
+                               cmd->apsFrame->destinationEndpoint,
+                               on_off_val ? "ON" : "OFF");
 
   return false;
 }
@@ -767,7 +881,7 @@ static void light_sync_handler(sl_zigbee_af_event_t *event)
     };
     sl_zigbee_af_fill_command_global_client_to_server_read_attributes(
         ZCL_ON_OFF_CLUSTER_ID, attr_ids, sizeof(attr_ids));
-    sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = DIMMER_ENDPOINT;
+    sl_zigbee_af_get_command_aps_frame()->sourceEndpoint = CONTROL_ENDPOINT;
     sl_zigbee_af_send_command_multicast_to_bindings();
     sl_zigbee_af_send_command_unicast_to_bindings();
   }
@@ -796,6 +910,31 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
     return true;  // consume self-loopback (commands and reports)
   }
 
+  // Route group feedback using control bindings before framework endpoint dispatch.
+  if (msg->apsFrame->clusterId == ZCL_ON_OFF_CLUSTER_ID
+      && msg->apsFrame->destinationEndpoint == 0xFF) {
+    uint8_t on_off_val;
+    if (parse_report_attribute_u8(msg->message,
+                                  msg->msgLen,
+                                  ZCL_ON_OFF_ATTRIBUTE_ID,
+                                  &on_off_val)) {
+      if (has_matching_multicast_binding(CONTROL_ENDPOINT,
+                                         ZCL_ON_OFF_CLUSTER_ID,
+                                         msg->apsFrame->groupId)) {
+        h2_led_update_light_state(0, on_off_val != 0);
+
+        sl_zigbee_app_debug_println("Light report EP%d group 0x%04X raw: %s",
+                                     CONTROL_ENDPOINT,
+                                     msg->apsFrame->groupId,
+                                     on_off_val ? "ON" : "OFF");
+      } else {
+        sl_zigbee_app_debug_println("Ignored light report group 0x%04X",
+                                     msg->apsFrame->groupId);
+      }
+      return true;
+    }
+  }
+
   // Consume binding-based On/Off cluster-specific commands (ep 0xFF).
   // Coupled: ignore — relay only controlled locally or by direct Z2M commands.
   // Decoupled: update LED from bound light state.
@@ -803,25 +942,36 @@ bool sl_zigbee_af_pre_message_received_cb(sl_zigbee_af_incoming_message_t *msg)
       && msg->apsFrame->destinationEndpoint == 0xFF
       && msg->msgLen >= 3
       && (msg->message[0] & 0x03) == 0x01) {
-    if (h2_opple_get_op_mode(0) != OPPLE_OP_MODE_CONTROL_RELAY) {
+    if ((msg->message[0] & (ZCL_MANUFACTURER_SPECIFIC_MASK
+                           | ZCL_FRAME_CONTROL_SERVER_TO_CLIENT)) == 0
+        && h2_opple_get_op_mode(0) != OPPLE_OP_MODE_CONTROL_RELAY
+        && has_matching_multicast_binding(CONTROL_ENDPOINT,
+                                           ZCL_ON_OFF_CLUSTER_ID,
+                                           msg->apsFrame->groupId)) {
       uint8_t cmd_id = msg->message[2];
       if (cmd_id == 0x01) {
         h2_led_update_light_state(0, true);
+
       } else if (cmd_id == 0x00) {
         h2_led_update_light_state(0, false);
+
       }
     }
     return true;  // always consume — never let binding On/Off change relay
   }
 
-  // Handle binding-based Level Control (endpoint 0xFF) — from bound switches
-  // Direct commands (from Z2M, endpoint 1) fall through to framework for response
+  // Only local-output group membership permits coupled hardware dimming.
+  // Direct commands fall through to the framework for a response.
   if (msg->apsFrame->clusterId == ZCL_LEVEL_CONTROL_CLUSTER_ID
       && msg->msgLen >= 3
       && (msg->message[0] & 0x03) == 0x01
       && msg->apsFrame->destinationEndpoint == 0xFF) {
-    if (h2_opple_get_op_mode(0) != OPPLE_OP_MODE_CONTROL_RELAY) {
-      return true;  // decoupled: consume self-loopback silently
+    if (h2_opple_get_op_mode(0) != OPPLE_OP_MODE_CONTROL_RELAY
+        || (msg->message[0] & (ZCL_MANUFACTURER_SPECIFIC_MASK
+                              | ZCL_FRAME_CONTROL_SERVER_TO_CLIENT)) != 0
+        || !sl_zigbee_af_groups_cluster_endpoint_in_group_cb(
+             DIMMER_ENDPOINT, msg->apsFrame->groupId)) {
+      return true;
     }
     handle_level_control_cmd(msg->message[2], &msg->message[3], msg->msgLen - 3);
     return true;  // coupled: handle Move/Stop from switches locally
@@ -869,6 +1019,10 @@ void sl_zigbee_af_main_init_cb(void)
   sl_zigbee_af_event_init(&commissioning_event, commissioning_event_handler);
   sl_zigbee_af_event_init(&factory_reset_event, factory_reset_event_handler);
   sl_zigbee_af_event_init(&light_sync_event, light_sync_handler);
+  sl_zigbee_af_event_init(&power_on_event, power_on_handler);
+
+  // Defer until ZCL initialization finishes; restore even without a network.
+  sl_zigbee_af_event_set_active(&power_on_event);
 
   // Reduce APS ACK timeout
   sl_zigbee_set_aps_ack_timeout_ms(500);
@@ -883,21 +1037,6 @@ void sl_zigbee_af_stack_status_cb(sl_status_t status)
   if (status == SL_STATUS_NETWORK_UP) {
     sl_zigbee_app_debug_println("Network UP");
     joined = true;
-
-    // Apply power-on behavior for local dimmer
-    h2_opple_apply_power_on_behavior(0);
-    sync_dimmer_to_cluster();
-
-    // Initialize dimmer level from Zigbee attribute
-    {
-      uint8_t level = 254;
-      sl_zigbee_af_read_server_attribute(DIMMER_ENDPOINT,
-        ZCL_LEVEL_CONTROL_CLUSTER_ID, ZCL_CURRENT_LEVEL_ATTRIBUTE_ID,
-        &level, sizeof(level));
-      if (level < 1) level = 254;
-      level = clamp_to_brightness_range(level);
-      h2_relay_set_level(0, level);
-    }
 
     // Start OTA client immediately
     sl_zigbee_af_ota_client_start_cb();
